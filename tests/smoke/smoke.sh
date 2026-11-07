@@ -39,9 +39,17 @@ expect() { # expect DESCRIPTION COMMAND...
     if "$@"; then pass "${description}"; else fail "${description}"; fi
 }
 
+# The app runs as root, as on Home Assistant OS, so the state it writes under
+# data/ is owned by root. On Linux the user running this script can't change or
+# delete those files, so do that from a container.
+in_data() { docker run --rm -v "${WORKDIR}/data:/data" --entrypoint bash "${IMAGE}" -c "$1"; }
+
 cleanup() {
     docker rm -f "${NAME}-es" "${NAME}-agent" "${NAME}-entry" >/dev/null 2>&1 || true
     docker network rm "${NAME}" >/dev/null 2>&1 || true
+    if [[ -n "${IMAGE}" ]]; then
+        docker run --rm -v "${WORKDIR}:/work" --entrypoint rm "${IMAGE}" -rf /work/data >/dev/null 2>&1 || true
+    fi
     rm -rf "${WORKDIR}"
 }
 trap cleanup EXIT
@@ -98,27 +106,27 @@ else
 fi
 
 log "Entrypoint: token changed"
-touch "${WORKDIR}/data/state/marker"
+in_data 'touch /data/state/marker'
 jq '.enrollment_token = "token-two"' "${WORKDIR}/data/options.json" >"${WORKDIR}/o.json"
 mv "${WORKDIR}/o.json" "${WORKDIR}/data/options.json"
 run_entrypoint 5
-expect "old state moved to state.previous" test -f "${WORKDIR}/data/state.previous/marker"
+expect "old state moved to state.previous" in_data 'test -f /data/state.previous/marker'
 expect "logs the re-enrollment" grep -q "Enrolling again" "${WORKDIR}/entry.log"
 
 log "Entrypoint: unchanged options preserve state"
-touch "${WORKDIR}/data/state/unchanged-marker"
+in_data 'touch /data/state/unchanged-marker'
 run_entrypoint 5
-expect "unchanged options keep existing state" test -f "${WORKDIR}/data/state/unchanged-marker"
+expect "unchanged options keep existing state" in_data 'test -f /data/state/unchanged-marker'
 
 log "Entrypoint: certificate verification changed"
 for insecure in true false; do
-    touch "${WORKDIR}/data/state/tls-${insecure}-marker"
+    in_data "touch /data/state/tls-${insecure}-marker"
     jq --argjson insecure "${insecure}" '.insecure = $insecure' \
         "${WORKDIR}/data/options.json" >"${WORKDIR}/o.json"
     mv "${WORKDIR}/o.json" "${WORKDIR}/data/options.json"
     run_entrypoint 5
     expect "insecure=${insecure} replaces the previous enrollment state" \
-        test -f "${WORKDIR}/data/state.previous/tls-${insecure}-marker"
+        in_data "test -f /data/state.previous/tls-${insecure}-marker"
     check "FLEET_INSECURE" "FLEET_INSECURE=${insecure}" "$(grep '^FLEET_INSECURE=' "${WORKDIR}/env")"
 done
 
