@@ -1,0 +1,44 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", "helpers:pinGitHubActionDigests"],
+  "enabledManagers": ["custom.regex", "dockerfile", "github-actions"],
+  "semanticCommits": "disabled",
+  "labels": ["dependencies"],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Elasticsearch used by the smoke test, kept on the agent's version",
+      "managerFilePatterns": ["/^tests/smoke/smoke\\.sh$/"],
+      "matchStrings": ["(?<depName>docker\\.elastic\\.co/elasticsearch/elasticsearch):(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "datasourceTemplate": "docker"
+    }
+  ],
+  "packageRules": [
+    {
+      "description": "Update the agent and the smoke test's Elasticsearch together",
+      "matchPackageNames": ["docker.elastic.co/**"],
+      "groupName": "Elastic Stack",
+      "prBodyNotes": [
+        "Before merging, bump `version` in `elastic_agent/config.yaml`, add an `elastic_agent/CHANGELOG.md` entry, and update the agent version in `elastic_agent/DOCS.md`. Fleet Server must be on this version or newer, so call that out in the changelog."
+      ]
+    },
+    {
+      "description": "Elastic Agent: no pre-releases or snapshots",
+      "matchPackageNames": ["docker.elastic.co/**"],
+      "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/"
+    },
+    {
+      "description": "GitHub Actions: weekly",
+      "matchManagers": ["github-actions"],
+      "addLabels": ["github_actions"],
+      "schedule": ["before 8am on monday"]
+    },
+    {
+      "description": "Home Assistant actions that follow a branch float on purpose",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["home-assistant/**"],
+      "matchCurrentValue": "/^(dev|main|master)$/",
+      "pinDigests": false
+    }
+  ]
+}

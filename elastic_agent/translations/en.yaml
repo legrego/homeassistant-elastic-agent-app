@@ -1,0 +1,26 @@
+configuration:
+  fleet_url:
+    name: Fleet Server URL
+    description: >-
+      The URL of your Fleet Server, for example https://fleet.example.com:443.
+      In Kibana, find it under Fleet > Settings > Fleet Server hosts.
+  enrollment_token:
+    name: Enrollment token
+    description: >-
+      The enrollment token for the agent policy to use. In Kibana, find it
+      under Fleet > Enrollment tokens. Changing it enrolls a new agent.
+  ca_certificate:
+    name: CA certificate
+    description: >-
+      Optional. The CA that signed the Fleet Server certificate, as PEM text or
+      as a file name in the /ssl folder (for example fleet-ca.pem). Leave empty
+      if the certificate is publicly trusted, as on Elastic Cloud.
+  insecure:
+    name: Skip certificate verification
+    description: >-
+      Don't verify the Fleet Server certificate. Use only for test clusters
+      with self-signed certificates. Changing this enrolls a new agent.
+  tags:
+    name: Agent tags
+    description: >-
+      Optional tags shown on the agent in Fleet, for filtering and searching.

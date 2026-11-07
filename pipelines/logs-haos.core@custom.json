@@ -1,0 +1,80 @@
+{
+  "description": "Parses Home Assistant Core log lines read from the journal by the Elastic Agent app. See elastic_agent/DOCS.md.",
+  "processors": [
+    {
+      "gsub": {
+        "tag": "strip-ansi",
+        "field": "message",
+        "pattern": "\\x1b\\[[0-9;]*m",
+        "replacement": "",
+        "ignore_missing": true
+      }
+    },
+    {
+      "grok": {
+        "tag": "parse-core-line",
+        "field": "message",
+        "patterns": [
+          "^%{TIMESTAMP_ISO8601:homeassistant.log.timestamp} %{LOGLEVEL:log.level} \\(%{DATA:process.thread.name}\\) \\[%{DATA:log.logger}\\] %{MULTILINE:message}"
+        ],
+        "pattern_definitions": {
+          "MULTILINE": "(?:.|\\n)*"
+        },
+        "ignore_missing": true,
+        "on_failure": [
+          {
+            "append": {
+              "field": "tags",
+              "value": "haos_core_unparsed"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "lowercase": {
+        "field": "log.level",
+        "ignore_missing": true
+      }
+    },
+    {
+      "grok": {
+        "tag": "integration-from-logger",
+        "field": "log.logger",
+        "patterns": [
+          "^(?:homeassistant\\.components|custom_components)\\.(?<homeassistant.integration>[^.]+)"
+        ],
+        "ignore_missing": true,
+        "ignore_failure": true
+      }
+    },
+    {
+      "script": {
+        "tag": "split-traceback",
+        "lang": "painless",
+        "if": "ctx.message instanceof String && ctx.message.contains('Traceback (most recent call last):')",
+        "source": "String m = ctx.message; String nl = String.valueOf((char) 10); int start = m.indexOf('Traceback (most recent call last):'); String trace = m.substring(start).trim(); String last = trace.substring(trace.lastIndexOf(nl) + 1).trim(); int colon = last.indexOf(':'); Map error = new HashMap(); error.put('stack_trace', trace); error.put('type', colon > 0 ? last.substring(0, colon) : last); if (colon > 0) { error.put('message', last.substring(colon + 1).trim()); } ctx.error = error; if (start > 0) { ctx.message = m.substring(0, start).trim(); }"
+      }
+    },
+    {
+      "remove": {
+        "field": "homeassistant.log.timestamp",
+        "ignore_missing": true
+      }
+    }
+  ],
+  "on_failure": [
+    {
+      "append": {
+        "field": "tags",
+        "value": "haos_core_pipeline_error"
+      }
+    },
+    {
+      "set": {
+        "field": "error.message",
+        "value": "{{{ _ingest.on_failure_message }}}"
+      }
+    }
+  ]
+}

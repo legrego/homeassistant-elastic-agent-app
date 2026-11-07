@@ -1,0 +1,4 @@
+# https://contributors.home-assistant.io/apps/guides/repository/#create-the-repository
+name: Elastic Agent app repository
+url: "https://github.com/legrego/homeassistant-elastic-agent-app"
+maintainer: Larry Gregory

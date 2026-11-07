@@ -1,0 +1,3 @@
+ignored:
+  # Packages come from the UBI repositories that match the pinned base image tag.
+  - DL3041

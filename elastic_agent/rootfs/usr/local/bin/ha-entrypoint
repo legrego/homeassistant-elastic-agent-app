@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# Entrypoint for the Elastic Agent Home Assistant app.
+#
+# Reads the app options, prepares the container for reading the host journal,
+# and hands over to Elastic Agent's own container entrypoint, which enrolls with
+# Fleet on first start and reuses the saved state afterwards.
+set -euo pipefail
+
+OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
+DATA_DIR="${DATA_DIR:-/data}"
+STATE_DIR="${DATA_DIR}/state"
+FINGERPRINT_FILE="${DATA_DIR}/enrollment.sha256"
+SSL_DIR="${SSL_DIR:-/ssl}"
+JOURNAL_DIRS=(/var/log/journal /run/log/journal)
+
+log() { printf '[ha-entrypoint] %s\n' "$*" >&2; }
+fatal() {
+    log "ERROR: $*"
+    exit 1
+}
+
+option() { jq -r --arg key "$1" '.[$key] // empty' "${OPTIONS_FILE}"; }
+
+[[ -r "${OPTIONS_FILE}" ]] || fatal "Can't read ${OPTIONS_FILE}."
+
+fleet_url="$(option fleet_url)"
+enrollment_token="$(option enrollment_token)"
+ca_certificate="$(option ca_certificate)"
+insecure="$(jq -r '.insecure // false' "${OPTIONS_FILE}")"
+tags="$(jq -r '(.tags // []) | map(select(. != null and . != "")) | join(",")' "${OPTIONS_FILE}")"
+
+[[ -n "${fleet_url}" ]] || fatal "Set fleet_url in the app configuration."
+[[ -n "${enrollment_token}" ]] || fatal "Set enrollment_token in the app configuration."
+
+# --- Fleet enrollment -------------------------------------------------------
+
+export FLEET_ENROLL=1
+export FLEET_URL="${fleet_url}"
+export FLEET_ENROLLMENT_TOKEN="${enrollment_token}"
+export STATE_PATH="${STATE_DIR}"
+export FLEET_INSECURE="${insecure}"
+
+if [[ "${insecure}" == "true" ]]; then
+    log "WARNING: insecure is on. The Fleet Server certificate won't be verified."
+fi
+
+if [[ -n "${ca_certificate}" ]]; then
+    if [[ "${ca_certificate}" == *"-----BEGIN"* ]]; then
+        ca_path="${DATA_DIR}/fleet-ca.pem"
+        printf '%s\n' "${ca_certificate}" >"${ca_path}"
+    else
+        ca_path="${ca_certificate}"
+        [[ "${ca_path}" == /* ]] || ca_path="${SSL_DIR}/${ca_path}"
+        [[ -r "${ca_path}" ]] || fatal "Can't read the CA certificate at ${ca_path}."
+    fi
+    log "Using CA certificate ${ca_path} for Fleet Server."
+    export FLEET_CA="${ca_path}"
+fi
+
+if [[ -n "${tags}" ]]; then
+    export ELASTIC_AGENT_TAGS="${tags}"
+fi
+
+# Elastic Agent enrolls only when it has no saved enrollment. If the Fleet URL
+# or token changed, move the old state aside so it enrolls again. The insecure
+# setting is also saved at enrollment and cannot be changed by its environment
+# variable alone. A failed enrollment leaves no saved enrollment, so the next
+# start retries it.
+fingerprint="$(printf '%s\n%s\n%s\n' "${fleet_url}" "${enrollment_token}" "${insecure}" | sha256sum | cut -d' ' -f1)"
+if [[ -f "${FINGERPRINT_FILE}" && -d "${STATE_DIR}" ]] &&
+    [[ "$(cat "${FINGERPRINT_FILE}")" != "${fingerprint}" ]]; then
+    log "Fleet URL, enrollment token or certificate verification changed. Enrolling again as a new agent."
+    log "The old agent stays in Fleet until you unenroll or delete it there."
+    rm -rf "${STATE_DIR}.previous"
+    mv "${STATE_DIR}" "${STATE_DIR}.previous"
+fi
+printf '%s\n' "${fingerprint}" >"${FINGERPRINT_FILE}"
+mkdir -p "${STATE_DIR}"
+
+# --- Host identity -----------------------------------------------------------
+
+# Label data with the Home Assistant host's name, not the container's.
+host_name=""
+if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
+    host_name="$(curl -fsS --max-time 10 \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        http://supervisor/host/info 2>/dev/null |
+        jq -r '.data.hostname // empty' 2>/dev/null)" || host_name=""
+fi
+if [[ -n "${host_name}" ]]; then
+    log "Reporting host name ${host_name}."
+    export ELASTIC_AGENT_HOSTNAME="${host_name}"
+else
+    log "WARNING: Couldn't read the host name from the Supervisor. Using $(hostname)."
+fi
+
+# journalctl only reads journal files written by the machine whose ID is in
+# /etc/machine-id. Use the host's ID, taken from the newest journal directory,
+# so the journald input sees the host journal without extra configuration.
+# This also makes host.id match the Home Assistant host.
+machine_id=""
+for dir in "${JOURNAL_DIRS[@]}"; do
+    [[ -d "${dir}" ]] || continue
+    while IFS= read -r candidate; do
+        id="$(basename "${candidate}")"
+        if [[ "${id}" =~ ^[0-9a-f]{32}$ ]]; then
+            machine_id="${id}"
+            break 2
+        fi
+    done < <(ls -1dt "${dir}"/*/ 2>/dev/null)
+done
+if [[ -n "${machine_id}" ]]; then
+    log "Found the host journal for machine ID ${machine_id}."
+    printf '%s\n' "${machine_id}" >/etc/machine-id ||
+        log "WARNING: Couldn't write /etc/machine-id. The journald input may read nothing."
+else
+    log "WARNING: No journal found under ${JOURNAL_DIRS[*]}. Is journald access enabled?"
+fi
+
+log "Starting Elastic Agent $(elastic-agent version --binary-only 2>/dev/null | head -1 || true)"
+exec /usr/local/bin/docker-entrypoint "$@"

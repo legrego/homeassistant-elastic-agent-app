@@ -1,0 +1,42 @@
+# https://contributors.home-assistant.io/apps/reference/configuration/
+name: Elastic Agent
+version: "0.1.0"
+slug: elastic_agent
+description: >-
+  Ship Home Assistant, Supervisor, app and host logs to Elasticsearch with a
+  Fleet-managed Elastic Agent
+url: "https://github.com/legrego/homeassistant-elastic-agent-app/tree/main/elastic_agent"
+image: "ghcr.io/legrego/ha-app-elastic-agent"
+arch:
+  - aarch64
+  - amd64
+stage: experimental
+# The Elastic Agent image ships its own init (tini).
+init: false
+# Agent needs a few seconds to flush queued events on shutdown.
+timeout: 30
+# Read-only access to the host's systemd journal (/var/log/journal, /run/log/journal).
+# Every container on Home Assistant OS logs to journald, so this covers Core,
+# the Supervisor, every app and the host. It doesn't change the security rating.
+journald: true
+# Default role only: used to read the host name from /host/info.
+hassio_api: true
+map:
+  # For a CA certificate given as a file name.
+  - type: ssl
+backup_exclude:
+  - "state/data/logs"
+  - "state/data/logs/*"
+  - "state/data/logs/default/*"
+options:
+  fleet_url: null
+  enrollment_token: null
+  insecure: false
+  tags: []
+schema:
+  fleet_url: url
+  enrollment_token: password
+  ca_certificate: str?
+  insecure: bool
+  tags:
+    - str?
