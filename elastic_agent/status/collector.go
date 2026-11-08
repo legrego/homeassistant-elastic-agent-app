@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -171,6 +172,7 @@ func (c *Collector) Report(ctx context.Context, refresh bool) *Report {
 			Status: StatusError, Summary: "The app hasn't finished starting, or couldn't record how it started.",
 			Detail: startupErr.Error()})
 		r.Overall = overall(r.Checks)
+		redactReport(r)
 		c.report, c.reportedAt = r, now
 		return r
 	}
@@ -192,6 +194,7 @@ func (c *Collector) Report(ctx context.Context, refresh bool) *Report {
 	r.Checks = append(r.Checks, configChecks(startup, options, optionsRaw, optionsErr, c.paths)...)
 	r.Checks = append(r.Checks, hostChecks(startup, c.paths)...)
 	r.Overall = overall(r.Checks)
+	redactReport(r)
 
 	c.report, c.reportedAt = r, now
 	return r
@@ -493,6 +496,41 @@ func redactURL(raw string) string {
 	}
 	u.User = nil
 	return u.String()
+}
+
+// urlUserinfo matches the user:password@ part of any URL in free text.
+var urlUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.-]*://)[^/?#\s@]+@`)
+
+// redactText removes credentials from URLs anywhere in s. Startup messages
+// and error text can quote the URL the user configured, password and all.
+func redactText(s string) string {
+	return urlUserinfo.ReplaceAllString(s, "$1")
+}
+
+// redactReport strips URL credentials from every free-text field in r, so no
+// message can carry them to the page.
+func redactReport(r *Report) {
+	for i := range r.StartupLog {
+		r.StartupLog[i].Text = redactText(r.StartupLog[i].Text)
+	}
+	for i := range r.Checks {
+		r.Checks[i].Summary = redactText(r.Checks[i].Summary)
+		r.Checks[i].Detail = redactText(r.Checks[i].Detail)
+	}
+	if a := r.Agent; a != nil {
+		a.Error, a.Message, a.FleetMessage = redactText(a.Error), redactText(a.Message), redactText(a.FleetMessage)
+		for ci := range a.Components {
+			c := &a.Components[ci]
+			c.Message = redactText(c.Message)
+			for ui := range c.Units {
+				u := &c.Units[ui]
+				u.Message = redactText(u.Message)
+				for si := range u.Streams {
+					u.Streams[si].Message = redactText(u.Streams[si].Message)
+				}
+			}
+		}
+	}
 }
 
 func joinList(items []string) string {

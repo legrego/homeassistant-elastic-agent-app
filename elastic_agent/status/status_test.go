@@ -68,6 +68,40 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+func TestRedactText(t *testing.T) {
+	cases := map[string]string{
+		"Connected at https://elastic:s3cret@es.example.com:9200.":       "Connected at https://es.example.com:9200.",
+		"Can't reach http://user@10.0.0.1/ or https://a:b@c.example/x?y": "Can't reach http://10.0.0.1/ or https://c.example/x?y",
+		"Get \"https://elastic:***@es:9200/\": dial tcp: refused":        "Get \"https://es:9200/\": dial tcp: refused",
+		"Mail me at admin@example.com about https://es.example.com/":     "Mail me at admin@example.com about https://es.example.com/",
+		"https://es.example.com/path@v1":                                 "https://es.example.com/path@v1",
+	}
+	for in, want := range cases {
+		if got := redactText(in); got != want {
+			t.Errorf("redactText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestReportRedactsAgentMessages(t *testing.T) {
+	es := fakeES(t, 200)
+	defer es.Close()
+	startup := Startup{Mode: "standalone", StartedAt: time.Now().Add(-time.Hour), ElasticsearchURL: es.URL,
+		Pipeline: pipelineName, Inputs: []string{"haos-system"}}
+	p := standaloneFixture(t, es.URL, startup, map[string]any{"elasticsearch_url": es.URL})
+	agent := healthyAgent()
+	agent.Components[0].Units[0].State = "failed"
+	agent.Components[0].Units[0].Message = "can't connect to https://elastic:hunter2@es.example.com:9200"
+	r := newTestCollector(p, agent).Report(context.Background(), false)
+	b, _ := json.Marshal(r)
+	if strings.Contains(string(b), "hunter2") {
+		t.Errorf("the report contains the password: %s", b)
+	}
+	if !strings.Contains(checksByID(r.Checks)["components"].Detail, "https://es.example.com:9200") {
+		t.Errorf("components detail lost the URL: %+v", checksByID(r.Checks)["components"])
+	}
+}
+
 func TestParseAgentStatus(t *testing.T) {
 	raw := `{
 	  "info": {"id": "abc", "version": "9.5.6", "is_managed": false},
@@ -199,7 +233,9 @@ func standaloneFixture(t *testing.T, esURL string, startup Startup, options map[
 		_ = os.MkdirAll(filepath.Join(dir, "journal", startup.MachineID), 0o755)
 		_ = os.WriteFile(filepath.Join(dir, "journal", startup.MachineID, "system.journal"), nil, 0o644)
 	}
-	_ = os.WriteFile(filepath.Join(dir, "startup.log"), []byte("[ha-entrypoint] Running in standalone mode.\n[ha-entrypoint] WARNING: something\n"), 0o600)
+	_ = os.WriteFile(filepath.Join(dir, "startup.log"), []byte("[ha-entrypoint] Running in standalone mode.\n"+
+		"[ha-elasticsearch-setup] Connected to Elasticsearch 9.5.6 at https://elastic:hunter2@es.example.com:9200.\n"+
+		"[ha-entrypoint] WARNING: something\n"), 0o600)
 	return p
 }
 
@@ -248,8 +284,10 @@ func TestStandaloneReport(t *testing.T) {
 	if !strings.Contains(byID["sources"].Detail, "Apps") {
 		t.Errorf("sources: %+v", byID["sources"])
 	}
-	if len(r.StartupLog) != 2 || r.StartupLog[1].Level != "warn" {
+	if len(r.StartupLog) != 3 || r.StartupLog[2].Level != "warn" {
 		t.Errorf("startup log: %+v", r.StartupLog)
+	} else if want := "at https://es.example.com:9200."; !strings.Contains(r.StartupLog[1].Text, want) {
+		t.Errorf("startup log line 2 = %q, want it to contain %q", r.StartupLog[1].Text, want)
 	}
 
 	b, _ := json.Marshal(r)

@@ -11,6 +11,8 @@ const MODE_LABEL = { standalone: "Standalone", fleet: "Fleet" };
 const $ = (id) => document.getElementById(id);
 let lastReport = null;
 let lastFetched = 0;
+// Only one request at a time: a slow answer must not let the timer queue more.
+let loading = false;
 
 function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
@@ -213,6 +215,8 @@ function updateClock() {
 }
 
 async function load(force = false) {
+  if (loading) return;
+  loading = true;
   const button = $("refresh");
   button.disabled = true;
   try {
@@ -227,6 +231,7 @@ async function load(force = false) {
       (lastReport ? " Showing the last status." : " Is the app running?");
   } finally {
     lastFetched = Date.now();
+    loading = false;
     button.disabled = false;
   }
 }
