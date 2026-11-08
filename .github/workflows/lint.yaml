@@ -50,4 +50,4 @@ jobs:
           persist-credentials: false
 
       - name: Lint shell scripts
-        run: shellcheck elastic_agent/rootfs/usr/local/bin/ha-entrypoint tests/smoke/smoke.sh
+        run: shellcheck elastic_agent/rootfs/usr/local/bin/ha-entrypoint elastic_agent/rootfs/usr/local/bin/ha-elasticsearch-setup tests/smoke/smoke.sh

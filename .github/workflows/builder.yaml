@@ -6,7 +6,6 @@ on:
       - main
     paths:
       - "elastic_agent/**"
-      - "pipelines/**"
       - "tests/**"
       - ".github/workflows/builder.yaml"
       - ".github/workflows/build-app.yaml"

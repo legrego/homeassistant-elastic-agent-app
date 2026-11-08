@@ -1,7 +1,8 @@
 # Home Assistant App: Elastic Agent
 
-Send Home Assistant Core, Supervisor, app and host logs to Elasticsearch with a
-Fleet-managed Elastic Agent.
+Send Home Assistant Core, Supervisor, app and host logs to Elasticsearch with
+Elastic Agent. Give it your Elasticsearch URL and a login, and it sets up the
+rest.
 
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]

@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# Prepares Elasticsearch for the standalone agent and prints JSON containing
+# its API key (id:api_key) and the verified pipeline name, or an empty string.
+#
+# With a username and password (for example the elastic superuser) it:
+#   1. creates an API key that can only write the app's logs-haos.* data
+#      streams, and saves it, so the password can be removed afterwards, and
+#   2. installs the ingest pipeline for Core logs.
+# With an API key it installs the pipeline if the key is allowed to, and sends
+# data with that key. With neither, it uses the key saved on an earlier start.
+#
+# Settings come from the environment, so no secret appears in a command line:
+#   ES_URL         Elasticsearch URL (required)
+#   ES_USERNAME    \ optional, used only to set things up
+#   ES_PASSWORD    /
+#   ES_API_KEY     optional, encoded (base64) or id:api_key
+#   ES_CA          optional path to a CA certificate
+#   ES_INSECURE    "true" to skip certificate verification
+#   KEY_FILE       where the created API key is saved
+#   PIPELINE_FILE  the ingest pipeline to install
+#   HOST_NAME      the Home Assistant host name, used in the API key's name
+set -euo pipefail
+
+: "${ES_URL:?ES_URL is required}"
+ES_URL="${ES_URL%/}"
+ES_USERNAME="${ES_USERNAME:-}"
+ES_PASSWORD="${ES_PASSWORD:-}"
+ES_API_KEY="${ES_API_KEY:-}"
+ES_CA="${ES_CA:-}"
+ES_INSECURE="${ES_INSECURE:-false}"
+KEY_FILE="${KEY_FILE:-/data/elasticsearch-api-key.json}"
+PIPELINE_FILE="${PIPELINE_FILE:-/usr/share/ha-elastic-agent/logs-haos.core@custom.json}"
+PIPELINE_NAME="logs-haos.core@custom"
+HOST_NAME="${HOST_NAME:-${HOSTNAME:-unknown}}"
+MANAGED_BY="homeassistant-elastic-agent-app"
+
+log() { printf '[ha-elasticsearch-setup] %s\n' "$*" >&2; }
+fatal() {
+    log "ERROR: $*"
+    exit 1
+}
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "${WORK}"' EXIT
+RESPONSE="${WORK}/response"
+CURL_ERROR="${WORK}/curl-error"
+STATUS=000
+
+# es METHOD PATH AUTHORIZATION [BODY]
+# Sends a request to Elasticsearch. Sets STATUS to the HTTP status, or 000 when
+# Elasticsearch can't be reached, and leaves the body in $RESPONSE. The
+# Authorization header is passed through a file descriptor, not the command line.
+es() {
+    local method="$1" path="$2" auth="$3" body="${4-}"
+    local args=(-sS --max-time 30 -X "${method}" -o "${RESPONSE}" -w '%{http_code}'
+        -H 'Content-Type: application/json')
+    if [[ -n "${ES_CA}" ]]; then args+=(--cacert "${ES_CA}"); fi
+    if [[ "${ES_INSECURE}" == "true" ]]; then args+=(-k); fi
+    if [[ -n "${body}" ]]; then args+=(--data-binary @-); fi
+    : >"${RESPONSE}"
+    # The process substitution has to be on curl's own command line: bash closes
+    # it as soon as the command that created it finishes.
+    STATUS="$(curl "${args[@]}" -H @<(printf 'Authorization: %s\n' "${auth}") \
+        "${ES_URL}${path}" <<<"${body}" 2>"${CURL_ERROR}")" || STATUS=000
+}
+
+# A short reason for a failed request, for the log.
+reason() {
+    if [[ "${STATUS}" == 000 ]]; then
+        sed -e 's/^curl: ([0-9]*) //' "${CURL_ERROR}" | head -1
+    else
+        local detail
+        detail="$(jq -r '.error.reason // .error.type // .error // empty' "${RESPONSE}" 2>/dev/null | head -1)" || detail=""
+        printf 'HTTP %s%s' "${STATUS}" "${detail:+: ${detail}}"
+    fi
+}
+
+# --- Credentials ---------------------------------------------------------------
+
+admin_auth=""
+user_key="" # the user's API key as id:api_key
+if [[ -n "${ES_USERNAME}" && -z "${ES_PASSWORD}" ]]; then
+    # Removing only the password after setup is the common case.
+    log "No password is set, so the username isn't used."
+    ES_USERNAME=""
+fi
+if [[ -n "${ES_PASSWORD}" ]]; then
+    [[ -n "${ES_USERNAME}" ]] || fatal "Set a username to go with the password."
+    admin_auth="Basic $(printf '%s:%s' "${ES_USERNAME}" "${ES_PASSWORD}" | base64 -w0)"
+fi
+if [[ -n "${ES_API_KEY}" ]]; then
+    if [[ "${ES_API_KEY}" == *:* ]]; then
+        user_key="${ES_API_KEY}"
+    else
+        user_key="$(printf '%s' "${ES_API_KEY}" | base64 -d 2>/dev/null)" || user_key=""
+        [[ "${user_key}" == ?*:?* ]] ||
+            fatal "api_key isn't an API key. Use the encoded value Kibana shows, or id:api_key."
+    fi
+    # A username and password take precedence for setting things up.
+    [[ -n "${admin_auth}" ]] || admin_auth="ApiKey $(printf '%s' "${user_key}" | base64 -w0)"
+fi
+
+api_key_auth() { printf 'ApiKey %s' "$(printf '%s' "$1" | base64 -w0)"; }
+
+# --- Connection ----------------------------------------------------------------
+
+reachable=false
+if [[ -n "${admin_auth}" ]]; then
+    es GET / "${admin_auth}"
+    case "${STATUS}" in
+        200)
+            reachable=true
+            log "Connected to Elasticsearch $(jq -r '.version.number // "?"' "${RESPONSE}") at ${ES_URL}."
+            ;;
+        401) fatal "Elasticsearch rejected the credentials ($(reason))." ;;
+        000) log "WARNING: Can't reach Elasticsearch at ${ES_URL}: $(reason)" ;;
+        *) log "WARNING: Unexpected answer from Elasticsearch at ${ES_URL}: $(reason)" ;;
+    esac
+fi
+
+# --- Ingest pipeline -------------------------------------------------------------
+
+output_pipeline=""
+install_pipeline() {
+    local wanted current managed
+    wanted="$(jq -r '.version' "${PIPELINE_FILE}")"
+    es GET "/_ingest/pipeline/${PIPELINE_NAME}" "${admin_auth}"
+    case "${STATUS}" in
+        200)
+            output_pipeline="${PIPELINE_NAME}"
+            managed="$(jq -r --arg n "${PIPELINE_NAME}" '.[$n]._meta.managed_by // empty' "${RESPONSE}")"
+            current="$(jq -r --arg n "${PIPELINE_NAME}" '.[$n].version // empty' "${RESPONSE}")"
+            if [[ "${managed}" != "${MANAGED_BY}" ]]; then
+                log "Keeping the existing ${PIPELINE_NAME} ingest pipeline, which the app didn't create."
+                return
+            fi
+            if [[ "${current}" == "${wanted}" ]]; then
+                log "The ${PIPELINE_NAME} ingest pipeline is up to date."
+                return
+            fi
+            ;;
+        404) ;;
+        403)
+            log "WARNING: These credentials can't read ingest pipelines."
+            log "WARNING: Use manage_pipeline to install the pipeline, or read_pipeline to use an existing one."
+            return
+            ;;
+        *)
+            log "WARNING: Couldn't check the ${PIPELINE_NAME} ingest pipeline ($(reason))."
+            return
+            ;;
+    esac
+    es PUT "/_ingest/pipeline/${PIPELINE_NAME}" "${admin_auth}" "$(cat "${PIPELINE_FILE}")"
+    if [[ "${STATUS}" == 200 ]]; then
+        output_pipeline="${PIPELINE_NAME}"
+        log "Installed version ${wanted} of the ${PIPELINE_NAME} ingest pipeline."
+    else
+        log "WARNING: Couldn't install the ${PIPELINE_NAME} ingest pipeline ($(reason))."
+    fi
+}
+
+# Check with the selected credentials on every start, including when only a
+# saved key remains. Never request a pipeline whose existence wasn't verified.
+emit_config() {
+    local key="$1"
+    [[ -n "${admin_auth}" ]] || admin_auth="$(api_key_auth "${key}")"
+    install_pipeline
+    if [[ -z "${output_pipeline}" ]]; then
+        log "WARNING: Core logs will be sent unparsed because the ingest pipeline couldn't be verified. Restart the app after fixing pipeline access."
+    fi
+    jq -n --arg key "${key}" --arg pipeline "${output_pipeline}" \
+        '{api_key: $key, pipeline: $pipeline}'
+}
+
+# --- API key for sending data ------------------------------------------------------
+
+# The user's own API key is used as it is.
+if [[ -n "${user_key}" ]]; then
+    es GET /_security/_authenticate "$(api_key_auth "${user_key}")"
+    [[ "${STATUS}" != 401 ]] || fatal "Elasticsearch rejected the API key."
+    log "Sending data with the configured API key."
+    emit_config "${user_key}"
+    exit 0
+fi
+
+saved_key=""
+if [[ -r "${KEY_FILE}" ]]; then
+    saved_url="$(jq -r '.url // empty' "${KEY_FILE}")"
+    if [[ "${saved_url}" == "${ES_URL}" ]]; then
+        saved_key="$(jq -r '"\(.id):\(.api_key)"' "${KEY_FILE}")"
+    elif [[ -z "${ES_USERNAME}" ]]; then
+        fatal "The saved API key is for ${saved_url}, not ${ES_URL}. Add a username and password so the app can create a new one."
+    fi
+fi
+
+if [[ -n "${saved_key}" ]]; then
+    es GET /_security/_authenticate "$(api_key_auth "${saved_key}")"
+    case "${STATUS}" in
+        200)
+            log "Sending data with the API key the app created earlier ($(jq -r '.id' "${KEY_FILE}"))."
+            emit_config "${saved_key}"
+            exit 0
+            ;;
+        401)
+            log "The saved API key was rejected. It may have been deleted or invalidated."
+            [[ -n "${ES_USERNAME}" ]] ||
+                fatal "Add a username and password so the app can create a new API key."
+            ;;
+        *)
+            # Elasticsearch may just be down. The agent retries until it's back.
+            log "WARNING: Couldn't check the saved API key ($(reason)). Using it anyway."
+            emit_config "${saved_key}"
+            exit 0
+            ;;
+    esac
+fi
+
+if [[ -z "${ES_USERNAME}" ]]; then
+    fatal "No credentials. Set a username and password, or an API key."
+fi
+[[ "${reachable}" == true ]] ||
+    fatal "Can't create an API key while Elasticsearch is unreachable."
+
+request="$(jq -n --arg name "Home Assistant Elastic Agent (${HOST_NAME})" \
+    --arg managed_by "${MANAGED_BY}" --arg host "${HOST_NAME}" '{
+    name: $name,
+    role_descriptors: {
+        homeassistant_elastic_agent: {
+            cluster: ["monitor", "read_pipeline"],
+            indices: [{names: ["logs-haos.*-*"], privileges: ["auto_configure", "create_doc"]}]
+        }
+    },
+    metadata: {managed_by: $managed_by, host: $host}
+}')"
+es POST /_security/api_key "${admin_auth}" "${request}"
+[[ "${STATUS}" == 200 ]] || fatal "Couldn't create an API key ($(reason))."
+
+(
+    umask 077
+    jq --arg url "${ES_URL}" '{url: $url, id, name, api_key}' "${RESPONSE}" >"${KEY_FILE}.tmp"
+)
+mv "${KEY_FILE}.tmp" "${KEY_FILE}"
+log "Created API key $(jq -r '.id' "${KEY_FILE}"), which can only write logs-haos.* data streams."
+log "You can now remove the password from the app configuration."
+emit_config "$(jq -r '"\(.id):\(.api_key)"' "${KEY_FILE}")"

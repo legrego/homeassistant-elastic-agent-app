@@ -1,10 +1,10 @@
 # https://contributors.home-assistant.io/apps/reference/configuration/
 name: Elastic Agent
-version: "0.1.0"
+version: "0.2.0"
 slug: elastic_agent
 description: >-
-  Ship Home Assistant, Supervisor, app and host logs to Elasticsearch with a
-  Fleet-managed Elastic Agent
+  Ship Home Assistant, Supervisor, app and host logs to Elasticsearch with
+  Elastic Agent
 url: "https://github.com/legrego/homeassistant-elastic-agent-app/tree/main/elastic_agent"
 image: "ghcr.io/legrego/ha-app-elastic-agent"
 arch:
@@ -28,15 +28,35 @@ backup_exclude:
   - "state/data/logs"
   - "state/data/logs/*"
   - "state/data/logs/default/*"
+# Optional settings left out of options are hidden in the UI until the user
+# shows unused optional options. The Fleet settings are hidden that way, so new
+# users see the standalone settings first. url fields can't be empty, so
+# elasticsearch_url is a str that the entrypoint checks.
 options:
-  fleet_url: null
-  enrollment_token: null
+  elasticsearch_url: ""
+  username: ""
+  password: ""
+  api_key: ""
+  collect_core: true
+  collect_supervisor: true
+  collect_apps: true
+  collect_host: true
+  read_existing_logs: false
   insecure: false
   tags: []
 schema:
-  fleet_url: url
-  enrollment_token: password
+  elasticsearch_url: str?
+  username: str?
+  password: password?
+  api_key: password?
+  collect_core: bool
+  collect_supervisor: bool
+  collect_apps: bool
+  collect_host: bool
+  read_existing_logs: bool
   ca_certificate: str?
   insecure: bool
   tags:
     - str?
+  fleet_url: url?
+  enrollment_token: password?

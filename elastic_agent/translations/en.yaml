@@ -1,26 +1,68 @@
 configuration:
-  fleet_url:
-    name: Fleet Server URL
+  elasticsearch_url:
+    name: Elasticsearch URL
     description: >-
-      The URL of your Fleet Server, for example https://fleet.example.com:443.
-      In Kibana, find it under Fleet > Settings > Fleet Server hosts.
-  enrollment_token:
-    name: Enrollment token
+      Where to send logs, for example https://my-deployment.es.us-east-1.aws.elastic.cloud:443.
+      On Elastic Cloud, copy the Elasticsearch endpoint from the deployment or
+      project page. Leave empty to use Fleet instead.
+  username:
+    name: Username
     description: >-
-      The enrollment token for the agent policy to use. In Kibana, find it
-      under Fleet > Enrollment tokens. Changing it enrolls a new agent.
+      Optional. A user that can set things up, such as the elastic superuser.
+      The app uses it to install the Core log pipeline and create an API key
+      that can only write logs. You can remove it after the first start.
+  password:
+    name: Password
+    description: >-
+      The password for the username. You can remove it after the first start.
+  api_key:
+    name: API key
+    description: >-
+      Optional, instead of a username and password. The app sends logs with
+      this key. Use it on Serverless projects, which have no superuser login.
+  collect_core:
+    name: Home Assistant Core logs
+    description: Send Core's logs, including startup and crashes.
+  collect_supervisor:
+    name: Supervisor logs
+    description: Send logs from the Supervisor and its plugins (DNS, audio, CLI and others).
+  collect_apps:
+    name: App logs
+    description: Send logs from every other app.
+  collect_host:
+    name: Host logs
+    description: Send logs from the host operating system, such as networking and Docker.
+  read_existing_logs:
+    name: Send existing logs on first start
+    description: >-
+      On the first start, also send the logs already in the journal. Otherwise
+      only new logs are sent. Later starts always continue where they stopped.
   ca_certificate:
     name: CA certificate
     description: >-
-      Optional. The CA that signed the Fleet Server certificate, as PEM text or
-      as a file name in the /ssl folder (for example fleet-ca.pem). Leave empty
-      if the certificate is publicly trusted, as on Elastic Cloud.
+      Optional. The CA that signed the Elasticsearch (or Fleet Server)
+      certificate, as PEM text or as a file name in the /ssl folder (for example
+      my-ca.pem). Leave empty if the certificate is publicly trusted, as on
+      Elastic Cloud.
   insecure:
     name: Skip certificate verification
     description: >-
-      Don't verify the Fleet Server certificate. Use only for test clusters
-      with self-signed certificates. Changing this enrolls a new agent.
+      Don't verify the Elasticsearch (or Fleet Server) certificate. Use only for
+      test clusters with self-signed certificates. With Fleet, changing this
+      enrolls a new agent.
   tags:
-    name: Agent tags
+    name: Tags
     description: >-
-      Optional tags shown on the agent in Fleet, for filtering and searching.
+      Optional tags added to every log event, or shown on the agent in Fleet.
+  fleet_url:
+    name: Fleet Server URL
+    description: >-
+      Fleet mode only. The URL of your Fleet Server, for example
+      https://fleet.example.com:443. In Kibana, find it under Fleet > Settings >
+      Fleet Server hosts. Leave empty for standalone mode.
+  enrollment_token:
+    name: Enrollment token
+    description: >-
+      Fleet mode only. The enrollment token for the agent policy to use. In
+      Kibana, find it under Fleet > Enrollment tokens. Changing it enrolls a new
+      agent.

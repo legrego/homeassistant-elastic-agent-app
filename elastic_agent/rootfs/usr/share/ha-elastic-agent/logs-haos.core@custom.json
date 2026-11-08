@@ -1,5 +1,9 @@
 {
   "description": "Parses Home Assistant Core log lines read from the journal by the Elastic Agent app. See elastic_agent/DOCS.md.",
+  "version": 1,
+  "_meta": {
+    "managed_by": "homeassistant-elastic-agent-app"
+  },
   "processors": [
     {
       "gsub": {

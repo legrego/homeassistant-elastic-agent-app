@@ -2,15 +2,24 @@
 # Entrypoint for the Elastic Agent Home Assistant app.
 #
 # Reads the app options, prepares the container for reading the host journal,
-# and hands over to Elastic Agent's own container entrypoint, which enrolls with
-# Fleet on first start and reuses the saved state afterwards.
+# and starts Elastic Agent in one of two modes:
+#
+# - Standalone (elasticsearch_url): the app prepares Elasticsearch, writes the
+#   agent's configuration from the options, and the agent sends logs straight
+#   to Elasticsearch.
+# - Fleet (fleet_url and enrollment_token): Elastic Agent's own container
+#   entrypoint enrolls with Fleet on first start and reuses the saved state
+#   afterwards. The policy comes from Fleet.
 set -euo pipefail
 
 OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
 DATA_DIR="${DATA_DIR:-/data}"
 STATE_DIR="${DATA_DIR}/state"
 FINGERPRINT_FILE="${DATA_DIR}/enrollment.sha256"
+KEY_FILE="${DATA_DIR}/elasticsearch-api-key.json"
 SSL_DIR="${SSL_DIR:-/ssl}"
+# Regenerated on every start, so it isn't kept on disk with the API key in it.
+CONFIG_DIR="${CONFIG_DIR:-/run/ha-elastic-agent}"
 JOURNAL_DIRS=(/var/log/journal /run/log/journal)
 
 log() { printf '[ha-entrypoint] %s\n' "$*" >&2; }
@@ -20,62 +29,54 @@ fatal() {
 }
 
 option() { jq -r --arg key "$1" '.[$key] // empty' "${OPTIONS_FILE}"; }
+# bool_option NAME DEFAULT
+bool_option() { jq -r --arg key "$1" --argjson default "$2" 'if has($key) and .[$key] != null then .[$key] else $default end' "${OPTIONS_FILE}"; }
 
 [[ -r "${OPTIONS_FILE}" ]] || fatal "Can't read ${OPTIONS_FILE}."
 
+elasticsearch_url="$(option elasticsearch_url)"
+username="$(option username)"
+password="$(option password)"
+api_key="$(option api_key)"
 fleet_url="$(option fleet_url)"
 enrollment_token="$(option enrollment_token)"
 ca_certificate="$(option ca_certificate)"
-insecure="$(jq -r '.insecure // false' "${OPTIONS_FILE}")"
-tags="$(jq -r '(.tags // []) | map(select(. != null and . != "")) | join(",")' "${OPTIONS_FILE}")"
+insecure="$(bool_option insecure false)"
 
-[[ -n "${fleet_url}" ]] || fatal "Set fleet_url in the app configuration."
-[[ -n "${enrollment_token}" ]] || fatal "Set enrollment_token in the app configuration."
-
-# --- Fleet enrollment -------------------------------------------------------
-
-export FLEET_ENROLL=1
-export FLEET_URL="${fleet_url}"
-export FLEET_ENROLLMENT_TOKEN="${enrollment_token}"
-export STATE_PATH="${STATE_DIR}"
-export FLEET_INSECURE="${insecure}"
+if [[ -n "${elasticsearch_url}" && (-n "${fleet_url}" || -n "${enrollment_token}") ]]; then
+    fatal "Set elasticsearch_url for standalone mode, or fleet_url and enrollment_token for Fleet, not both."
+elif [[ -n "${elasticsearch_url}" ]]; then
+    mode=standalone
+    [[ "${elasticsearch_url}" =~ ^https?://[^/]+ ]] ||
+        fatal "elasticsearch_url must be a URL like https://my-deployment.es.example.com:443."
+elif [[ -n "${fleet_url}" || -n "${enrollment_token}" ]]; then
+    mode=fleet
+    [[ -n "${fleet_url}" ]] || fatal "Set fleet_url in the app configuration."
+    [[ -n "${enrollment_token}" ]] || fatal "Set enrollment_token in the app configuration."
+else
+    fatal "Set elasticsearch_url and credentials, or fleet_url and enrollment_token for Fleet."
+fi
+log "Running in ${mode} mode."
 
 if [[ "${insecure}" == "true" ]]; then
-    log "WARNING: insecure is on. The Fleet Server certificate won't be verified."
+    log "WARNING: insecure is on. Server certificates won't be verified."
 fi
 
-if [[ -n "${ca_certificate}" ]]; then
+# resolve_ca FILE: the path of the configured CA certificate, writing PEM text
+# to FILE under /data. Prints nothing if no CA is configured.
+resolve_ca() {
+    [[ -n "${ca_certificate}" ]] || return 0
+    local ca_path
     if [[ "${ca_certificate}" == *"-----BEGIN"* ]]; then
-        ca_path="${DATA_DIR}/fleet-ca.pem"
+        ca_path="${DATA_DIR}/$1"
         printf '%s\n' "${ca_certificate}" >"${ca_path}"
     else
         ca_path="${ca_certificate}"
         [[ "${ca_path}" == /* ]] || ca_path="${SSL_DIR}/${ca_path}"
         [[ -r "${ca_path}" ]] || fatal "Can't read the CA certificate at ${ca_path}."
     fi
-    log "Using CA certificate ${ca_path} for Fleet Server."
-    export FLEET_CA="${ca_path}"
-fi
-
-if [[ -n "${tags}" ]]; then
-    export ELASTIC_AGENT_TAGS="${tags}"
-fi
-
-# Elastic Agent enrolls only when it has no saved enrollment. If the Fleet URL
-# or token changed, move the old state aside so it enrolls again. The insecure
-# setting is also saved at enrollment and cannot be changed by its environment
-# variable alone. A failed enrollment leaves no saved enrollment, so the next
-# start retries it.
-fingerprint="$(printf '%s\n%s\n%s\n' "${fleet_url}" "${enrollment_token}" "${insecure}" | sha256sum | cut -d' ' -f1)"
-if [[ -f "${FINGERPRINT_FILE}" && -d "${STATE_DIR}" ]] &&
-    [[ "$(cat "${FINGERPRINT_FILE}")" != "${fingerprint}" ]]; then
-    log "Fleet URL, enrollment token or certificate verification changed. Enrolling again as a new agent."
-    log "The old agent stays in Fleet until you unenroll or delete it there."
-    rm -rf "${STATE_DIR}.previous"
-    mv "${STATE_DIR}" "${STATE_DIR}.previous"
-fi
-printf '%s\n' "${fingerprint}" >"${FINGERPRINT_FILE}"
-mkdir -p "${STATE_DIR}"
+    printf '%s\n' "${ca_path}"
+}
 
 # --- Host identity -----------------------------------------------------------
 
@@ -91,7 +92,8 @@ if [[ -n "${host_name}" ]]; then
     log "Reporting host name ${host_name}."
     export ELASTIC_AGENT_HOSTNAME="${host_name}"
 else
-    log "WARNING: Couldn't read the host name from the Supervisor. Using $(hostname)."
+    host_name="${HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo unknown)}"
+    log "WARNING: Couldn't read the host name from the Supervisor. Using ${host_name}."
 fi
 
 # journalctl only reads journal files written by the machine whose ID is in
@@ -116,6 +118,95 @@ if [[ -n "${machine_id}" ]]; then
 else
     log "WARNING: No journal found under ${JOURNAL_DIRS[*]}. Is journald access enabled?"
 fi
+
+# --- Saved agent state -----------------------------------------------------------
+
+# Elastic Agent enrolls only when it has no saved enrollment. If the Fleet URL
+# or token changed, move the old state aside so it enrolls again. The insecure
+# setting is also saved at enrollment and cannot be changed by its environment
+# variable alone. A failed enrollment leaves no saved enrollment, so the next
+# start retries it. Switching between Fleet and standalone mode also starts
+# from fresh state, so a standalone agent never runs a saved Fleet enrollment.
+if [[ "${mode}" == fleet ]]; then
+    fingerprint="$(printf '%s\n%s\n%s\n' "${fleet_url}" "${enrollment_token}" "${insecure}" | sha256sum | cut -d' ' -f1)"
+else
+    fingerprint="standalone"
+fi
+if [[ -f "${FINGERPRINT_FILE}" && -d "${STATE_DIR}" ]]; then
+    previous="$(cat "${FINGERPRINT_FILE}")"
+    if [[ "${previous}" != "${fingerprint}" ]]; then
+        if [[ "${mode}" == standalone ]]; then
+            log "Switching from Fleet to standalone mode. Moving the Fleet agent's state aside."
+            log "The old agent stays in Fleet until you unenroll or delete it there."
+        elif [[ "${previous}" == standalone ]]; then
+            log "Switching from standalone mode to Fleet. Enrolling as a new agent."
+        else
+            log "Fleet URL, enrollment token or certificate verification changed. Enrolling again as a new agent."
+            log "The old agent stays in Fleet until you unenroll or delete it there."
+        fi
+        rm -rf "${STATE_DIR}.previous"
+        mv "${STATE_DIR}" "${STATE_DIR}.previous"
+    fi
+fi
+printf '%s\n' "${fingerprint}" >"${FINGERPRINT_FILE}"
+mkdir -p "${STATE_DIR}"
+export STATE_PATH="${STATE_DIR}"
+
+# --- Fleet mode ----------------------------------------------------------------
+
+start_fleet() {
+    local ca_path tags
+    export FLEET_ENROLL=1
+    export FLEET_URL="${fleet_url}"
+    export FLEET_ENROLLMENT_TOKEN="${enrollment_token}"
+    export FLEET_INSECURE="${insecure}"
+
+    ca_path="$(resolve_ca fleet-ca.pem)"
+    if [[ -n "${ca_path}" ]]; then
+        log "Using CA certificate ${ca_path} for Fleet Server."
+        export FLEET_CA="${ca_path}"
+    fi
+
+    tags="$(jq -r '(.tags // []) | map(select(. != null and . != "")) | join(",")' "${OPTIONS_FILE}")"
+    if [[ -n "${tags}" ]]; then
+        export ELASTIC_AGENT_TAGS="${tags}"
+    fi
+}
+
+# --- Standalone mode -------------------------------------------------------------
+
+start_standalone() {
+    local ca_path setup_result output_key pipeline
+    ca_path="$(resolve_ca ca.pem)"
+    [[ -z "${ca_path}" ]] || log "Using CA certificate ${ca_path} for Elasticsearch."
+
+    setup_result="$(ES_URL="${elasticsearch_url}" ES_USERNAME="${username}" \
+        ES_PASSWORD="${password}" ES_API_KEY="${api_key}" ES_CA="${ca_path}" \
+        ES_INSECURE="${insecure}" KEY_FILE="${KEY_FILE}" HOST_NAME="${host_name}" \
+        ha-elasticsearch-setup)" || fatal "Couldn't prepare Elasticsearch. See the messages above."
+    output_key="$(jq -r '.api_key' <<<"${setup_result}")"
+    pipeline="$(jq -r '.pipeline' <<<"${setup_result}")"
+
+    mkdir -p "${CONFIG_DIR}"
+    chmod 700 "${CONFIG_DIR}"
+    # JSON is valid YAML, and jq takes care of quoting.
+    (
+        umask 077
+        jq --arg url "${elasticsearch_url%/}" --arg key "${output_key}" \
+            --arg ca "${ca_path}" --argjson insecure "${insecure}" \
+            --arg pipeline "${pipeline}" --arg host "${host_name}" \
+            -f /usr/share/ha-elastic-agent/agent-config.jq "${OPTIONS_FILE}" \
+            >"${CONFIG_DIR}/elastic-agent.yml"
+    ) || fatal "Couldn't write the agent configuration."
+
+    local streams
+    streams="$(jq -r '[.inputs[].id] | join(", ")' "${CONFIG_DIR}/elastic-agent.yml")"
+    [[ -n "${streams}" ]] || fatal "Every log source is turned off. Turn on at least one."
+    log "Collecting: ${streams}."
+    export CONFIG_PATH="${CONFIG_DIR}"
+}
+
+"start_${mode}"
 
 log "Starting Elastic Agent $(elastic-agent version --binary-only 2>/dev/null | head -1 || true)"
 exec /usr/local/bin/docker-entrypoint "$@"

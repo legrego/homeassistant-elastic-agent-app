@@ -22,6 +22,6 @@ ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ha-entrypoint"]
 
 LABEL \
     org.opencontainers.image.title="Home Assistant App: Elastic Agent" \
-    org.opencontainers.image.description="Fleet-managed Elastic Agent that ships Home Assistant OS logs to Elasticsearch" \
+    org.opencontainers.image.description="Elastic Agent that ships Home Assistant OS logs to Elasticsearch" \
     org.opencontainers.image.source="https://github.com/legrego/homeassistant-elastic-agent-app" \
     org.opencontainers.image.licenses="MIT AND Elastic-2.0"
