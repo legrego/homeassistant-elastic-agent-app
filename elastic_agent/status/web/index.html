@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Elastic Agent status</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="top">
+      <div>
+        <h1>Elastic Agent</h1>
+        <p class="sub" id="subtitle">Loading status…</p>
+      </div>
+      <div class="actions">
+        <span class="updated" id="updated" aria-live="polite"></span>
+        <button type="button" id="refresh">Check now</button>
+      </div>
+    </header>
+
+    <div id="error" class="banner banner-error" hidden></div>
+
+    <section id="overall" class="overall" hidden>
+      <span class="dot" id="overall-dot"></span>
+      <div>
+        <h2 id="overall-title"></h2>
+        <ul id="attention" class="attention"></ul>
+      </div>
+    </section>
+
+    <section class="facts" id="facts" hidden></section>
+
+    <div id="groups"></div>
+
+    <section class="card" id="components-card" hidden>
+      <h2>Agent components</h2>
+      <div id="components"></div>
+    </section>
+
+    <section class="card" id="log-card" hidden>
+      <details>
+        <summary><h2>Startup log</h2><span class="count" id="log-count"></span></summary>
+        <pre id="log"></pre>
+      </details>
+    </section>
+
+    <footer>
+      Refreshes every 15 seconds. Remote checks are cached for 30 seconds.
+      The agent's full log is in the app's <strong>Log</strong> tab.
+    </footer>
+  </main>
+</body>
+</html>

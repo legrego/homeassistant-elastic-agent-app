@@ -28,6 +28,11 @@
       "allowedVersions": "/^\\d+\\.\\d+\\.\\d+$/"
     },
     {
+      "description": "Go for the status page: the Dockerfile and the lint job's container move together",
+      "matchPackageNames": ["golang"],
+      "groupName": "Go"
+    },
+    {
       "description": "GitHub Actions: weekly",
       "matchManagers": ["github-actions"],
       "addLabels": ["github_actions"],

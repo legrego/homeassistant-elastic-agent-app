@@ -1,3 +1,13 @@
+# The status page served through Home Assistant ingress. It's a static Go
+# binary with no dependencies beyond the standard library, cross-compiled for
+# the target architecture.
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS status
+ARG TARGETARCH
+WORKDIR /src
+COPY status/ ./
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
+    go build -trimpath -ldflags="-s -w" -o /out/ha-status-server .
+
 # The slim image has the journald input but not journalctl, which the input runs
 # to read the journal. journalctl and jq come from the UBI 9 repositories that
 # match the base image.
@@ -17,6 +27,7 @@ RUN microdnf install -y --nodocs --setopt=install_weak_deps=0 jq systemd \
 ENV BEAT_SETUID_AS=""
 
 COPY rootfs /
+COPY --from=status /out/ha-status-server /usr/local/bin/ha-status-server
 
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ha-entrypoint"]
 

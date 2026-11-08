@@ -7,6 +7,9 @@ rest.
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]
 
+The app's status page, in the sidebar or behind **Open web UI**, shows whether
+the agent is healthy and logs are getting through.
+
 This app is experimental. See the **Documentation** tab for setup.
 
 [aarch64-shield]: https://img.shields.io/badge/aarch64-yes-green.svg

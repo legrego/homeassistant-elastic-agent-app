@@ -10,6 +10,9 @@
 # - Fleet (fleet_url and enrollment_token): Elastic Agent's own container
 #   entrypoint enrolls with Fleet on first start and reuses the saved state
 #   afterwards. The policy comes from Fleet.
+#
+# It also starts the status page (ha-status-server), which Home Assistant shows
+# through ingress, and records what it found in ${CONFIG_DIR}/startup.json for it.
 set -euo pipefail
 
 OPTIONS_FILE="${OPTIONS_FILE:-/data/options.json}"
@@ -21,8 +24,23 @@ SSL_DIR="${SSL_DIR:-/ssl}"
 # Regenerated on every start, so it isn't kept on disk with the API key in it.
 CONFIG_DIR="${CONFIG_DIR:-/run/ha-elastic-agent}"
 JOURNAL_DIRS=(/var/log/journal /run/log/journal)
+STATUS_LISTEN="${STATUS_LISTEN:-:8099}"
+# Besides the container itself, only the Supervisor's ingress proxy may open
+# the status page. Override it for local development only.
+STATUS_ALLOWED_IPS="${STATUS_ALLOWED_IPS:-172.30.32.2}"
 
-log() { printf '[ha-entrypoint] %s\n' "$*" >&2; }
+mkdir -p "${CONFIG_DIR}"
+chmod 700 "${CONFIG_DIR}"
+# Startup messages, also shown on the status page. ha-elasticsearch-setup
+# appends to it too.
+export HA_STARTUP_LOG="${CONFIG_DIR}/startup.log"
+: >"${HA_STARTUP_LOG}"
+rm -f "${CONFIG_DIR}/startup.json"
+
+log() {
+    printf '[ha-entrypoint] %s\n' "$*" >&2
+    printf '[ha-entrypoint] %s\n' "$*" >>"${HA_STARTUP_LOG}" 2>/dev/null || true
+}
 fatal() {
     log "ERROR: $*"
     exit 1
@@ -82,6 +100,7 @@ resolve_ca() {
 
 # Label data with the Home Assistant host's name, not the container's.
 host_name=""
+host_name_source=supervisor
 if [[ -n "${SUPERVISOR_TOKEN:-}" ]]; then
     host_name="$(curl -fsS --max-time 10 \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
@@ -93,6 +112,7 @@ if [[ -n "${host_name}" ]]; then
     export ELASTIC_AGENT_HOSTNAME="${host_name}"
 else
     host_name="${HOSTNAME:-$(cat /etc/hostname 2>/dev/null || echo unknown)}"
+    host_name_source=container
     log "WARNING: Couldn't read the host name from the Supervisor. Using ${host_name}."
 fi
 
@@ -154,6 +174,8 @@ export STATE_PATH="${STATE_DIR}"
 
 # --- Fleet mode ----------------------------------------------------------------
 
+startup_ca=""
+
 start_fleet() {
     local ca_path tags
     export FLEET_ENROLL=1
@@ -162,6 +184,7 @@ start_fleet() {
     export FLEET_INSECURE="${insecure}"
 
     ca_path="$(resolve_ca fleet-ca.pem)"
+    startup_ca="${ca_path}"
     if [[ -n "${ca_path}" ]]; then
         log "Using CA certificate ${ca_path} for Fleet Server."
         export FLEET_CA="${ca_path}"
@@ -175,9 +198,14 @@ start_fleet() {
 
 # --- Standalone mode -------------------------------------------------------------
 
+# Set by start_standalone for startup.json.
+pipeline=""
+credential=""
+
 start_standalone() {
-    local ca_path setup_result output_key pipeline
+    local ca_path setup_result output_key
     ca_path="$(resolve_ca ca.pem)"
+    startup_ca="${ca_path}"
     [[ -z "${ca_path}" ]] || log "Using CA certificate ${ca_path} for Elasticsearch."
 
     setup_result="$(ES_URL="${elasticsearch_url}" ES_USERNAME="${username}" \
@@ -186,9 +214,8 @@ start_standalone() {
         ha-elasticsearch-setup)" || fatal "Couldn't prepare Elasticsearch. See the messages above."
     output_key="$(jq -r '.api_key' <<<"${setup_result}")"
     pipeline="$(jq -r '.pipeline' <<<"${setup_result}")"
+    credential="$(jq -r '.credential' <<<"${setup_result}")"
 
-    mkdir -p "${CONFIG_DIR}"
-    chmod 700 "${CONFIG_DIR}"
     # JSON is valid YAML, and jq takes care of quoting.
     (
         umask 077
@@ -207,6 +234,50 @@ start_standalone() {
 }
 
 "start_${mode}"
+
+# --- Status page -------------------------------------------------------------------
+
+# What the status page reports about this start. It holds no secrets.
+inputs_json='[]'
+if [[ "${mode}" == standalone ]]; then
+    inputs_json="$(jq -c '[.inputs[].id]' "${CONFIG_DIR}/elastic-agent.yml")"
+fi
+jq -n --arg mode "${mode}" --arg host_name "${host_name}" \
+    --arg host_name_source "${host_name_source}" --arg machine_id "${machine_id}" \
+    --arg ca_path "${startup_ca}" --argjson insecure "${insecure}" \
+    --arg elasticsearch_url "${elasticsearch_url%/}" --arg fleet_url "${fleet_url}" \
+    --arg pipeline "${pipeline}" --arg credential "${credential}" \
+    --argjson inputs "${inputs_json}" \
+    --arg options_sha256 "$(sha256sum "${OPTIONS_FILE}" | cut -d' ' -f1)" \
+    --slurpfile options "${OPTIONS_FILE}" '{
+        mode: $mode,
+        started_at: (now | todate),
+        host_name: $host_name,
+        host_name_source: $host_name_source,
+        machine_id: $machine_id,
+        ca_path: $ca_path,
+        insecure: $insecure,
+        elasticsearch_url: $elasticsearch_url,
+        fleet_url: $fleet_url,
+        pipeline: $pipeline,
+        credential: $credential,
+        inputs: $inputs,
+        tags: (($options[0].tags // []) | map(select(. != null and . != ""))),
+        options_sha256: $options_sha256
+    }' >"${CONFIG_DIR}/startup.json"
+
+# The status page gets only what it needs from the environment, not the
+# enrollment token. It's restarted if it stops, and never stops the agent.
+(
+    while true; do
+        env -i PATH="${PATH}" STATE_PATH="${STATE_PATH}" \
+            SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}" \
+            STATUS_LISTEN="${STATUS_LISTEN}" STATUS_ALLOWED_IPS="${STATUS_ALLOWED_IPS}" \
+            OPTIONS_FILE="${OPTIONS_FILE}" DATA_DIR="${DATA_DIR}" CONFIG_DIR="${CONFIG_DIR}" \
+            ha-status-server || log "WARNING: The status page stopped (exit code $?). Restarting it."
+        sleep 5
+    done
+) &
 
 log "Starting Elastic Agent $(elastic-agent version --binary-only 2>/dev/null | head -1 || true)"
 exec /usr/local/bin/docker-entrypoint "$@"

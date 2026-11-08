@@ -15,6 +15,8 @@
 # 5. Checks unparsed delivery when a saved key can't recreate a missing pipeline.
 # 6. Runs with only an API key, no pipeline and some log sources turned off.
 #
+# Along the way it checks the status page each mode serves on port 8099.
+#
 # Usage: tests/smoke/smoke.sh   (set IMAGE to skip the build)
 set -euo pipefail
 
@@ -82,6 +84,14 @@ run_to_exit() {
     return "${code}"
 }
 
+# fetch_status FILE: saves the running app's status report, asked from inside
+# the container as the ingress proxy only reaches it from the Supervisor.
+fetch_status() {
+    docker exec "${NAME}-app" curl -fsS --max-time 30 http://127.0.0.1:8099/api/status >"$1" 2>/dev/null || echo '{}' >"$1"
+}
+# status_of FILE CHECK_ID
+status_of() { jq -r --arg id "$2" '[.checks[]? | select(.id == $id) | .status][0] // "missing"' "$1"; }
+
 cleanup() {
     docker rm -f "${NAME}-es" "${NAME}-app" "${NAME}-supervisor" >/dev/null 2>&1 || true
     docker network rm "${NAME}" >/dev/null 2>&1 || true
@@ -129,6 +139,7 @@ run_entrypoint() {
         for p in /proc/[0-9]*; do
             if grep -qa FLEET_URL "$p/environ" 2>/dev/null; then tr "\0" "\n" <"$p/environ"; break; fi
         done' >"${WORKDIR}/env" 2>/dev/null || true
+    fetch_status "${WORKDIR}/fleet-status.json"
     docker rm -f "${NAME}-app" >/dev/null
 }
 run_entrypoint 15
@@ -141,6 +152,11 @@ check "STATE_PATH" "STATE_PATH=/data/state" "$(grep '^STATE_PATH=' "${WORKDIR}/e
 expect "agent tries to enroll with the configured URL" grep -q "fleet.invalid" "${WORKDIR}/entry.log"
 expect "state lives under /data/state" in_data 'test -d /data/state'
 expect_not "the enrollment token isn't logged" grep -q "enrollment_token\|token-one" "${WORKDIR}/entry.log"
+check "status page: Fleet mode" fleet "$(jq -r '.summary.mode' "${WORKDIR}/fleet-status.json")"
+check "status page: unreachable Fleet Server" error "$(status_of "${WORKDIR}/fleet-status.json" fleet_server)"
+check "status page: agent waits for enrollment" warn "$(status_of "${WORKDIR}/fleet-status.json" agent)"
+check "status page: host journal" ok "$(status_of "${WORKDIR}/fleet-status.json" journal)"
+expect_not "status page: no enrollment token" grep -q "token-one" "${WORKDIR}/fleet-status.json"
 
 log "Fleet mode: token changed"
 in_data 'touch /data/state/marker'
@@ -192,17 +208,22 @@ es "${ES}" >/dev/null || {
     exit 1
 }
 
-# Answers /host/info like the Supervisor, for callers with the right token.
+# Answers /host/info and /addons/self/info like the Supervisor, for callers
+# with the right token.
 docker run -d --name "${NAME}-supervisor" --network "${NAME}" --network-alias supervisor \
     "${PYTHON_IMAGE}" python3 -c "
 import http.server, json
+ANSWERS = {
+    '/host/info': {'hostname': '${HA_HOST_NAME}'},
+    '/addons/self/info': {'version': '9.9.9', 'version_latest': '9.9.9', 'update_available': False},
+}
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        ok = self.path == '/host/info' and self.headers.get('Authorization') == 'Bearer ${SUPERVISOR_TOKEN}'
+        ok = self.path in ANSWERS and self.headers.get('Authorization') == 'Bearer ${SUPERVISOR_TOKEN}'
         self.send_response(200 if ok else 401)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(json.dumps({'result': 'ok', 'data': {'hostname': '${HA_HOST_NAME}'}} if ok else {}).encode())
+        self.wfile.write(json.dumps({'result': 'ok', 'data': ANSWERS[self.path]} if ok else {}).encode())
 http.server.HTTPServer(('', 80), Handler).serve_forever()" >/dev/null
 
 count() {
@@ -236,6 +257,10 @@ set_options <<EOF
 EOF
 start_app
 wait_for 4 3
+fetch_status "${WORKDIR}/status.json"
+page_from_network="$(docker run --rm --network "${NAME}" --entrypoint curl "${IMAGE}" \
+    -s -o /dev/null -w '%{http_code}' "http://${NAME}-app:8099/" || true)"
+page_from_inside="$(docker exec "${NAME}-app" curl -s http://127.0.0.1:8099/ | grep -c '<title>Elastic Agent status</title>' || true)"
 stop_app
 expect "logs the mode" grep -q "Running in standalone mode" "${WORKDIR}/app.log"
 expect "Fleet state moved aside" in_data 'test -f /data/state.previous/fleet-marker'
@@ -255,6 +280,21 @@ docs() { jq -r "[.hits.hits[]._source | $1] | join(\"|\")" "${WORKDIR}/core.json
 check "host.name is the Home Assistant host" "${HA_HOST_NAME}" "$(docs '.host.name' | tr '|' '\n' | sort -u)"
 check "host.id is the host machine ID" "${MACHINE_ID}" "$(docs '.host.id' | tr '|' '\n' | sort -u)"
 check "tags" "smoke" "$(docs '.tags | join(",")' | tr '|' '\n' | sort -u)"
+
+log "Standalone mode: status page"
+check "serves the page" 1 "${page_from_inside}"
+check "refuses other containers" 403 "${page_from_network}"
+check "overall status" ok "$(jq -r '.overall' "${WORKDIR}/status.json")"
+for id in agent components elasticsearch write_access pipeline credential host_name journal options_changed; do
+    check "${id} check" ok "$(status_of "${WORKDIR}/status.json" "${id}")"
+done
+check "suggests removing the password" info "$(status_of "${WORKDIR}/status.json" password)"
+check "app version from the Supervisor" 9.9.9 "$(jq -r '.summary.app_version' "${WORKDIR}/status.json")"
+check "agent version" "$(docker run --rm --entrypoint elastic-agent "${IMAGE}" version --binary-only 2>/dev/null | sed -n 's/^Binary: \([0-9.]*\).*/\1/p')" \
+    "$(jq -r '.summary.agent_version' "${WORKDIR}/status.json")"
+check "startup log" true "$(jq '[.startup_log[].text] | any(contains("Created API key"))' "${WORKDIR}/status.json")"
+expect_not "no password in the status" grep -q "${ES_PASSWORD}" "${WORKDIR}/status.json"
+expect_not "no API key in the status" grep -q "$(in_data 'jq -r .api_key /data/elasticsearch-api-key.json')" "${WORKDIR}/status.json"
 
 log "Standalone mode: Core logs are parsed on ingest"
 check "log.level" "info|warning|error|info" "$(docs '.log.level // "-"')"
@@ -297,11 +337,14 @@ es -XDELETE "${ES}/_data_stream/logs-haos.*" >/dev/null
 in_data 'rm -rf /data/state'
 start_app
 wait_for 4 3
+fetch_status "${WORKDIR}/status.json"
 stop_app
 expect "warns that the saved key can't reinstall the pipeline" grep -q "Couldn't install" "${WORKDIR}/app.log"
 expect "announces unparsed delivery" grep -q "Core logs will be sent unparsed" "${WORKDIR}/app.log"
 check "Core events survive a missing pipeline" 4 "$(count haos.core)"
 check "system events survive a missing pipeline" 3 "$(count haos.system)"
+check "status page warns about unparsed Core logs" warn "$(status_of "${WORKDIR}/status.json" pipeline)"
+check "status page: overall warning" warn "$(jq -r '.overall' "${WORKDIR}/status.json")"
 
 log "Standalone mode: wrong password"
 update_options ".username = \"elastic\" | .password = \"wrong\""

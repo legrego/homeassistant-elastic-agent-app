@@ -54,9 +54,12 @@ The app runs in one of two modes:
    [ha-elasticsearch-setup] Created API key ..., which can only write logs-haos.* data streams.
    ```
 
-4. If you gave a username and password, remove them from the configuration
+4. Open the app's status page (**Open web UI** on the app's page, or
+   **Elastic Agent** in the sidebar). Every check should be green. See [Status
+   page](#status-page).
+5. If you gave a username and password, remove them from the configuration
    and save. The app keeps sending logs with the API key it created.
-5. In Kibana, open **Discover** and pick the `logs-haos.*` data streams (create
+6. In Kibana, open **Discover** and pick the `logs-haos.*` data streams (create
    a data view for `logs-haos.*` if Discover asks for one).
 
 Example:
@@ -153,6 +156,39 @@ access to enable parsing. Previously sent logs aren't parsed retroactively.
 The agent remembers where it stopped reading the journal, so restarts and
 updates don't send logs twice, and logs written while it was stopped are sent
 when it starts again.
+
+## Status page
+
+The app has a status page that shows whether it's set up correctly and
+whether logs are getting through. Open it with **Open web UI** on the app's
+page, or from **Elastic Agent** in the sidebar (turn on **Show in sidebar**
+first). It refreshes every 15 seconds, and **Check now** runs every check
+again.
+
+At the top it says whether everything looks good, and lists anything that
+needs attention. Below that are the mode, where logs go, the host name, the
+agent and app versions (with a note when an update is available), how long the
+app has been running and the tags. Then come the checks:
+
+| Group | Checks |
+|---|---|
+| Elastic Agent | Whether the agent is running and healthy, its connection to Fleet (Fleet mode), and the health of each input and output |
+| Connectivity | Standalone: whether Elasticsearch can be reached with the agent's API key, whether the key can write every data stream the app uses, and whether the Core log pipeline is installed and in use. Fleet: whether Fleet Server can be reached and reports itself healthy. |
+| Configuration | The mode, which API key the agent uses, which log sources are on, certificate verification, and whether the configuration changed since the app started (so a restart is needed) |
+| Host | Whether the host name came from the Supervisor, and whether the host journal can be read |
+
+The page also lists the agent's components and units with their states, and the
+messages the app logged while starting.
+
+The checks use the same address, API key and certificate settings as the agent,
+and only read. The page never shows passwords, API keys or enrollment tokens.
+Checks against Elasticsearch or Fleet Server run at most every 30 seconds, or
+every 5 seconds with **Check now**.
+
+Only Home Assistant can open the page: the app refuses connections that don't
+come through the Supervisor's ingress proxy. If the app can't start, for
+example because the configuration is incomplete, there's no status page.
+Check the **Log** tab instead.
 
 ## Core log fields
 
@@ -271,6 +307,8 @@ follows `read_existing_logs`, so you may get some logs twice.
   API key, so a restored agent carries on where it stopped. The agent's own log
   files are left out. Backups also include the app's configuration, which is one
   more reason to remove the password after the first start.
+- **Status page.** A small web server in the app (`ha-status-server`) serves
+  the [status page](#status-page) through Home Assistant ingress.
 - **The agent's own logs** are in the app's **Log** tab. In standalone mode the
   agent doesn't send its own logs and metrics to Elasticsearch, so its API key
   can stay limited to `logs-haos.*`.
@@ -281,7 +319,8 @@ The app asks for:
 
 - Read-only access to the host journal (`journald`).
 - The Supervisor API with the default role (`hassio_api`), only to read the
-  host name.
+  host name and the app's own version.
+- Ingress (`ingress`), for the status page. Ingress raises the security rating.
 - Read-only access to the `/ssl` folder, for `ca_certificate`.
 
 The agent runs as root inside its container, because the journal files can only

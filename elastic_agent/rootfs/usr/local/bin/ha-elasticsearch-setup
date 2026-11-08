@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Prepares Elasticsearch for the standalone agent and prints JSON containing
-# its API key (id:api_key) and the verified pipeline name, or an empty string.
+# its API key (id:api_key), the verified pipeline name or an empty string, and
+# where the key came from (credential: configured, saved or created).
 #
 # With a username and password (for example the elastic superuser) it:
 #   1. creates an API key that can only write the app's logs-haos.* data
@@ -19,6 +20,7 @@
 #   KEY_FILE       where the created API key is saved
 #   PIPELINE_FILE  the ingest pipeline to install
 #   HOST_NAME      the Home Assistant host name, used in the API key's name
+#   HA_STARTUP_LOG optional file that log messages are also appended to
 set -euo pipefail
 
 : "${ES_URL:?ES_URL is required}"
@@ -34,7 +36,12 @@ PIPELINE_NAME="logs-haos.core@custom"
 HOST_NAME="${HOST_NAME:-${HOSTNAME:-unknown}}"
 MANAGED_BY="homeassistant-elastic-agent-app"
 
-log() { printf '[ha-elasticsearch-setup] %s\n' "$*" >&2; }
+log() {
+    printf '[ha-elasticsearch-setup] %s\n' "$*" >&2
+    if [[ -n "${HA_STARTUP_LOG:-}" ]]; then
+        printf '[ha-elasticsearch-setup] %s\n' "$*" >>"${HA_STARTUP_LOG}" 2>/dev/null || true
+    fi
+}
 fatal() {
     log "ERROR: $*"
     exit 1
@@ -162,14 +169,14 @@ install_pipeline() {
 # Check with the selected credentials on every start, including when only a
 # saved key remains. Never request a pipeline whose existence wasn't verified.
 emit_config() {
-    local key="$1"
+    local key="$1" credential="$2"
     [[ -n "${admin_auth}" ]] || admin_auth="$(api_key_auth "${key}")"
     install_pipeline
     if [[ -z "${output_pipeline}" ]]; then
         log "WARNING: Core logs will be sent unparsed because the ingest pipeline couldn't be verified. Restart the app after fixing pipeline access."
     fi
-    jq -n --arg key "${key}" --arg pipeline "${output_pipeline}" \
-        '{api_key: $key, pipeline: $pipeline}'
+    jq -n --arg key "${key}" --arg pipeline "${output_pipeline}" --arg credential "${credential}" \
+        '{api_key: $key, pipeline: $pipeline, credential: $credential}'
 }
 
 # --- API key for sending data ------------------------------------------------------
@@ -179,7 +186,7 @@ if [[ -n "${user_key}" ]]; then
     es GET /_security/_authenticate "$(api_key_auth "${user_key}")"
     [[ "${STATUS}" != 401 ]] || fatal "Elasticsearch rejected the API key."
     log "Sending data with the configured API key."
-    emit_config "${user_key}"
+    emit_config "${user_key}" configured
     exit 0
 fi
 
@@ -198,7 +205,7 @@ if [[ -n "${saved_key}" ]]; then
     case "${STATUS}" in
         200)
             log "Sending data with the API key the app created earlier ($(jq -r '.id' "${KEY_FILE}"))."
-            emit_config "${saved_key}"
+            emit_config "${saved_key}" saved
             exit 0
             ;;
         401)
@@ -209,7 +216,7 @@ if [[ -n "${saved_key}" ]]; then
         *)
             # Elasticsearch may just be down. The agent retries until it's back.
             log "WARNING: Couldn't check the saved API key ($(reason)). Using it anyway."
-            emit_config "${saved_key}"
+            emit_config "${saved_key}" saved
             exit 0
             ;;
     esac
@@ -242,4 +249,4 @@ es POST /_security/api_key "${admin_auth}" "${request}"
 mv "${KEY_FILE}.tmp" "${KEY_FILE}"
 log "Created API key $(jq -r '.id' "${KEY_FILE}"), which can only write logs-haos.* data streams."
 log "You can now remove the password from the app configuration."
-emit_config "$(jq -r '"\(.id):\(.api_key)"' "${KEY_FILE}")"
+emit_config "$(jq -r '"\(.id):\(.api_key)"' "${KEY_FILE}")" created
