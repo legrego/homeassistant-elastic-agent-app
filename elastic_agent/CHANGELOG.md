@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.0
+
+- New status page, shown through Home Assistant ingress (**Open web UI**, or
+  **Elastic Agent** in the sidebar). It shows whether the agent is running and
+  healthy, whether Elasticsearch or Fleet Server can be reached, whether the
+  API key can write the app's data streams, whether the Core log pipeline is in
+  use, and how the app is configured. It flags configuration changes that need
+  a restart, and never shows secrets.
+- The startup messages are also kept for the status page.
+
 ## 0.2.0
 
 - New standalone mode: set `elasticsearch_url` and a username and password

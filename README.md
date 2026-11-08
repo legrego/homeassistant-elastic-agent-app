@@ -10,6 +10,9 @@ Give it your Elasticsearch URL and a superuser login, and it sets up the rest:
 the ingest pipeline for Core logs, a write-only API key, and the agent's
 configuration. It can also enroll with Fleet instead.
 
+A status page in Home Assistant shows whether the agent is healthy and whether
+logs are getting through to Elasticsearch or Fleet.
+
 It complements the [Elasticsearch integration](https://github.com/legrego/homeassistant-elasticsearch),
 which publishes entity state changes.
 
@@ -38,12 +41,17 @@ Then install **Elastic Agent** and follow its [documentation](elastic_agent/DOCS
 - `elastic_agent/rootfs/usr/local/bin/ha-entrypoint` reads the options and
   starts the agent in standalone or Fleet mode. `ha-elasticsearch-setup`
   prepares Elasticsearch for standalone mode.
+- `elastic_agent/status/` is the status page served through ingress: a small
+  Go server (standard library only) with the page embedded. The Dockerfile
+  builds it in its own stage. Run its tests with
+  `cd elastic_agent/status && go test ./...`.
 - `elastic_agent/rootfs/usr/share/ha-elastic-agent/` holds the ingest pipeline
   for Core logs and `agent-config.jq`, which builds the standalone agent's
   configuration from the options.
 - `tests/smoke/smoke.sh` builds the image and tests both modes against a
   generated journal, a local Elasticsearch with security on and a fake
-  Supervisor. It needs Docker, curl, jq and python3.
+  Supervisor, including the status page. It needs Docker, curl, jq and
+  python3.
 
 ```bash
 tests/smoke/smoke.sh

@@ -1,6 +1,6 @@
 # https://contributors.home-assistant.io/apps/reference/configuration/
 name: Elastic Agent
-version: "0.2.0"
+version: "0.3.0"
 slug: elastic_agent
 description: >-
   Ship Home Assistant, Supervisor, app and host logs to Elasticsearch with
@@ -19,8 +19,14 @@ timeout: 30
 # Every container on Home Assistant OS logs to journald, so this covers Core,
 # the Supervisor, every app and the host. It doesn't change the security rating.
 journald: true
-# Default role only: used to read the host name from /host/info.
+# Default role only: used to read the host name from /host/info, and the app's
+# own version for the status page from /addons/self/info.
 hassio_api: true
+# The status page, shown in the sidebar and on the app's page. Only the
+# Supervisor's ingress proxy can reach it, on the default ingress port 8099.
+ingress: true
+panel_icon: mdi:list-status
+panel_title: Elastic Agent
 map:
   # For a CA certificate given as a file name.
   - type: ssl

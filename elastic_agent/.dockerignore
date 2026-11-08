@@ -1,0 +1,5 @@
+# Only the Dockerfile, rootfs and the status page sources go into the image.
+*.md
+translations
+status/*_test.go
+status/testdata
