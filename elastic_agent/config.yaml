@@ -25,7 +25,7 @@ hassio_api: true
 # The status page, shown in the sidebar and on the app's page. Only the
 # Supervisor's ingress proxy can reach it, on the default ingress port 8099.
 ingress: true
-panel_admin: true
+# panel_admin defaults to true; configuration also verifies ingress user groups.
 panel_icon: mdi:list-status
 panel_title: Elastic Agent
 map:
