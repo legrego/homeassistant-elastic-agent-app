@@ -36,6 +36,39 @@ The app runs in one of two modes:
   memory use, which is usually a few hundred MB. On a Raspberry Pi with 2 GB of
   RAM, keep an eye on memory after you start it.
 
+## Configure through the web UI
+
+Start the app, then select **Open web UI**. An unconfigured app stays running
+and shows **Setup required**. Expand **Configuration**, choose Standalone or
+Fleet, enter the connection details, and select **Save and restart**. If setup
+fails, or Fleet refuses the enrollment, the app keeps running and shows
+**Startup failed**, so you can inspect the startup log and correct the
+settings. Once Elastic Agent is running, the app stops if the agent stops, so
+Home Assistant shows it as stopped and its **Watchdog** option can restart it.
+
+The web form and Home Assistant's **Configuration** tab use the same
+Supervisor-managed options. Changes take effect after restart. Reload saved
+settings before editing if another browser or the Configuration tab changed them.
+Switching modes clears the previous mode's connection settings and credentials;
+existing agent state follows the normal mode-switch behavior described below.
+
+Saved passwords, API keys, and enrollment tokens are never returned to the form.
+Leave them blank to keep them, enter a replacement, or explicitly clear them.
+Secret references (including `!secret` URLs) are preserved when unchanged.
+Saved URLs containing credentials, query strings, or fragments are hidden in the
+form; leave them blank to keep the exact saved value. Enter a replacement or
+select **Clear saved URL** to change them explicitly. New literal URLs in the
+form must not contain credentials, query strings, or fragments; use Home
+Assistant's Configuration tab for those advanced URLs.
+Settings still follow Home Assistant's normal storage and backup behavior.
+
+Configuration requires ingress from a verified Home Assistant administrator.
+The backend checks the Supervisor-provided user ID and `system-admin` group;
+requests without these headers are denied, including direct loopback requests.
+Older Supervisors that do not supply user groups can still use the Configuration
+tab. Update Supervisor to use the web form. No additional Supervisor role or
+exposed host port is required.
+
 ## Quick start
 
 1. Find your Elasticsearch URL. On Elastic Cloud, copy the **Elasticsearch**
@@ -186,9 +219,11 @@ Checks against Elasticsearch or Fleet Server run at most every 30 seconds, or
 every 5 seconds with **Check now**.
 
 Only Home Assistant can open the page: the app refuses connections that don't
-come through the Supervisor's ingress proxy. If the app can't start, for
-example because the configuration is incomplete, there's no status page.
-Check the **Log** tab instead.
+come through the Supervisor's ingress proxy (local health checks are also allowed).
+The UI stays available when configuration is incomplete or Elastic Agent can't
+start with it.
+Use its Configuration form to recover, or use Home Assistant's Configuration
+and Log tabs.
 
 ## Core log fields
 

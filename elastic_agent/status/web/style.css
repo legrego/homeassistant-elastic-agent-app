@@ -213,3 +213,14 @@ footer { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
   .actions { width: 100%; justify-content: space-between; }
   .units .msg { padding-left: 0; }
 }
+
+.setup-field { margin: 1rem 0; }
+.setup-field > label { display: block; margin-bottom: .4rem; }
+.setup-field input:not([type=checkbox]), .setup-field textarea, .setup-field select {
+  display: block; width: 100%; box-sizing: border-box; padding: .65rem;
+  font: inherit; color: inherit; background: transparent; border: 1px solid #8892a0; border-radius: 6px;
+}
+.setup-field textarea { min-height: 5rem; resize: vertical; }
+.setup-field .clear-secret { display: flex; align-items: center; gap: .4rem; font-size: .9rem; margin-top: .4rem; }
+#setup-message { white-space: pre-wrap; }
+[hidden] { display: none !important; }

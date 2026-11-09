@@ -369,7 +369,7 @@ func TestFleetServerCheck(t *testing.T) {
 
 func TestMissingStartup(t *testing.T) {
 	r := newTestCollector(Paths{RunDir: t.TempDir()}, nil).Report(context.Background(), false)
-	if r.Overall != StatusError || r.Checks[0].ID != "startup" {
+	if r.Overall != StatusWarn || r.Summary.Mode != "setup" || r.Checks[0].ID != "startup" {
 		t.Errorf("got %+v", r)
 	}
 }

@@ -7,6 +7,7 @@
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
+  <script src="setup.js" defer></script>
 </head>
 <body>
   <main>
@@ -32,6 +33,25 @@
     </section>
 
     <section class="facts" id="facts" hidden></section>
+
+    <section class="card" id="setup-card">
+      <details id="setup-details">
+        <summary><h2>Configuration</h2></summary>
+        <p>Use these settings or Home Assistant's Configuration tab. Save and restart applies changes.</p>
+        <p>Leave saved credentials blank to keep them. Changing modes clears credentials for the previous mode.</p>
+        <p id="setup-message" role="status" aria-live="polite">Loading settings…</p>
+        <button type="button" id="reload-settings">Reload saved settings</button>
+        <form id="setup-form" hidden>
+          <div class="setup-field">
+            <label for="setup-mode">Mode</label>
+            <select id="setup-mode"><option value="standalone">Standalone — send directly to Elasticsearch</option><option value="fleet">Fleet — managed in Kibana</option></select>
+          </div>
+          <div id="setup-fields"></div>
+          <p>Standalone setup needs a username and password, an API key, or a previously generated key. Fleet needs an enrollment token. Certificate verification is enabled by default.</p>
+          <button type="submit" id="save-settings">Save and restart</button>
+        </form>
+      </details>
+    </section>
 
     <div id="groups"></div>
 

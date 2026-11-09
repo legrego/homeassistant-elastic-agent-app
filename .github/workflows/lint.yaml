@@ -73,7 +73,10 @@ jobs:
           persist-credentials: false
 
       - name: Lint shell scripts
-        run: shellcheck elastic_agent/rootfs/usr/local/bin/ha-entrypoint elastic_agent/rootfs/usr/local/bin/ha-elasticsearch-setup tests/smoke/smoke.sh .github/scripts/release-notes
+        run: shellcheck elastic_agent/rootfs/usr/local/bin/ha-entrypoint elastic_agent/rootfs/usr/local/bin/ha-agent-start elastic_agent/rootfs/usr/local/bin/ha-elasticsearch-setup tests/smoke/smoke.sh .github/scripts/release-notes
+
+      - name: Test configuration form
+        run: node --test tests/web/setup.test.cjs
 
   changelog:
     name: Changelog entry

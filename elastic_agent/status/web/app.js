@@ -6,7 +6,7 @@ const STATUS_URL = "api/status";
 const REFRESH_MS = 15000;
 const GROUPS = ["Elastic Agent", "Connectivity", "Configuration", "Host"];
 const STATUS_LABEL = { ok: "OK", info: "Note", warn: "Warning", error: "Problem", unknown: "Unknown" };
-const MODE_LABEL = { standalone: "Standalone", fleet: "Fleet" };
+const MODE_LABEL = { standalone: "Standalone", fleet: "Fleet", setup: "Setup required" };
 
 const $ = (id) => document.getElementById(id);
 let lastReport = null;
@@ -196,9 +196,11 @@ function renderLog(report) {
 }
 
 function render(report) {
+  if (report.summary.mode === "setup" && !lastReport) $("setup-details").open = true;
   lastReport = report;
   const mode = MODE_LABEL[report.summary.mode];
-  $("subtitle").textContent = mode
+  const startup = report.checks.find((c) => c.id === "startup");
+  $("subtitle").textContent = report.summary.mode === "setup" ? (startup ? startup.title : "Setup required") : mode
     ? `${mode} mode${report.summary.host_name ? " on " + report.summary.host_name : ""}`
     : "Status";
   renderOverall(report);

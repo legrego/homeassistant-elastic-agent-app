@@ -38,8 +38,9 @@ Then install **Elastic Agent** and follow its [documentation](elastic_agent/DOCS
 - `elastic_agent/` is the app. Its `Dockerfile` builds on Elastic's
   `elastic-agent-slim` image and adds `journalctl`, which the journald input
   needs.
-- `elastic_agent/rootfs/usr/local/bin/ha-entrypoint` reads the options and
-  starts the agent in standalone or Fleet mode. `ha-elasticsearch-setup`
+- `elastic_agent/rootfs/usr/local/bin/ha-entrypoint` keeps the web UI running
+  independently of agent startup. `ha-agent-start` reads the options and starts
+  the agent in standalone or Fleet mode. `ha-elasticsearch-setup`
   prepares Elasticsearch for standalone mode.
 - `elastic_agent/status/` is the status page served through ingress: a small
   Go server (standard library only) with the page embedded. The Dockerfile

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add administrator-only web configuration using Supervisor-managed options.
+- Keep the UI available when settings are missing or agent startup fails.
+  A running agent that stops still stops the app, so the watchdog can restart it.
+- Add write-only credential controls, CSRF protection and stale-edit detection.
+
 ## 0.3.0
 
 - New status page, shown through Home Assistant ingress (**Open web UI**, or
