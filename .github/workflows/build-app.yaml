@@ -12,6 +12,10 @@ on:
       publish:
         required: true
         type: boolean
+    outputs:
+      version:
+        description: The app version from config.yaml
+        value: ${{ jobs.prepare.outputs.version }}
 
 permissions:
   contents: read
