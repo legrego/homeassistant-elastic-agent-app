@@ -2,9 +2,8 @@
 // ingress. It reports how the app is configured, whether the host journal and
 // Elasticsearch or Fleet Server can be reached, and Elastic Agent's own health.
 //
-// It only reads: the app options, the files the entrypoint writes at startup,
-// the agent's configuration, and `elastic-agent status`. Secrets never leave
-// the process.
+// Configuration writes use the Supervisor API and require a verified ingress
+// administrator. Saved secrets never leave the process.
 package main
 
 import (
@@ -51,6 +50,7 @@ func newHandler(c *Collector, allowed []net.IP) http.Handler {
 		panic(err)
 	}
 	mux := http.NewServeMux()
+	newConfigAPI(c.paths).register(mux)
 	mux.Handle("GET /", http.FileServerFS(static))
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		report := c.Report(r.Context(), r.URL.Query().Get("refresh") == "1")

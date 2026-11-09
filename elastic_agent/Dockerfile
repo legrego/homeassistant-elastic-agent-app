@@ -29,7 +29,7 @@ ENV BEAT_SETUID_AS=""
 COPY rootfs /
 COPY --from=status /out/ha-status-server /usr/local/bin/ha-status-server
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/ha-entrypoint"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/usr/local/bin/ha-entrypoint"]
 
 LABEL \
     org.opencontainers.image.title="Home Assistant App: Elastic Agent" \

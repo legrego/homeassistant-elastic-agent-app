@@ -66,22 +66,20 @@ update_options() { # update_options JQ_FILTER
     in_data "jq '$1' /data/options.json >/tmp/o && cat /tmp/o >/data/options.json"
 }
 
-# run_to_exit LOG [DOCKER_RUN_ARGS...]: runs the app until it exits, for at most
-# 60 seconds, and returns its exit code. Used for starts that should fail.
+# run_to_exit LOG [DOCKER_RUN_ARGS...]: waits for agent setup to finish.
+# Failed setup must leave the container and status service running.
 run_to_exit() {
     local out="$1"
     shift
     docker run -d --name "${NAME}-app" "$@" -v "${DATA}:/data" "${IMAGE}" >/dev/null
-    for _ in $(seq 1 60); do
-        [[ "$(docker inspect -f '{{.State.Running}}' "${NAME}-app")" == true ]] || break
-        sleep 1
-    done
+    retry 60 agent_stopped || true
     docker logs "${NAME}-app" >"${out}" 2>&1 || true
-    local code
-    code="$(docker inspect -f '{{.State.ExitCode}}' "${NAME}-app")"
+    check "failed setup keeps the app running" true "$(docker inspect -f '{{.State.Running}}' "${NAME}-app")"
+    fetch_status "${WORKDIR}/failed-status.json"
+    check "failed setup keeps recovery UI available" setup "$(jq -r '.summary.mode' "${WORKDIR}/failed-status.json")"
     docker rm -f "${NAME}-app" >/dev/null
     [[ "$(cat "${out}")" == *"Starting Elastic Agent"* ]] && return 0
-    return "${code}"
+    return 1
 }
 
 # fetch_status FILE: saves the running app's status report, asked from inside
@@ -91,6 +89,29 @@ fetch_status() {
 }
 # status_of FILE CHECK_ID
 status_of() { jq -r --arg id "$2" '[.checks[]? | select(.id == $id) | .status][0] // "missing"' "$1"; }
+
+# stop_agent: kills the process the app's entrypoint waits on, as a crash would.
+stop_agent() {
+    docker exec "${NAME}-app" bash -c '
+        for p in /proc/[0-9]*; do
+            if [[ "$(tr "\0" " " <"$p/cmdline" 2>/dev/null)" == "elastic-agent container"* ]]; then
+                kill -KILL "${p#/proc/}"
+            fi
+        done' || true
+}
+app_running() { [[ "$(docker inspect -f '{{.State.Running}}' "${NAME}-app")" == true ]]; }
+app_stopped() { ! app_running; }
+agent_stopped() { docker exec "${NAME}-app" test -f /run/ha-elastic-agent/agent-stopped; }
+# retry SECONDS COMMAND...: retries the command once a second until it succeeds.
+retry() {
+    local seconds="$1"
+    shift
+    for _ in $(seq 1 "${seconds}"); do
+        "$@" && return 0
+        sleep 1
+    done
+    return 1
+}
 
 cleanup() {
     docker rm -f "${NAME}-es" "${NAME}-app" "${NAME}-supervisor" >/dev/null 2>&1 || true
@@ -107,6 +128,16 @@ if [[ -z "${IMAGE}" ]]; then
 fi
 docker network create "${NAME}" >/dev/null
 docker volume create "${DATA}" >/dev/null
+
+log "Unconfigured startup: UI stays available"
+set_options <<EOF
+{}
+EOF
+if run_to_exit "${WORKDIR}/empty.log"; then
+    fail "an unconfigured app starts Elastic Agent"
+else
+    pass "an unconfigured app waits for setup"
+fi
 
 log "Writing a journal with ${SYSTEMD_IMAGE}"
 mkdir -p "${WORKDIR}/journal/${MACHINE_ID}"
@@ -179,6 +210,31 @@ for insecure in true false; do
         in_data "test -f /data/state.previous/tls-${insecure}-marker"
     check "FLEET_INSECURE" "FLEET_INSECURE=${insecure}" "$(grep '^FLEET_INSECURE=' "${WORKDIR}/env")"
 done
+
+log "Fleet mode: agent stops before enrolling"
+docker run -d --name "${NAME}-app" -v "${DATA}:/data" "${IMAGE}" >/dev/null
+sleep 10
+stop_agent
+expect "the app notes that the agent stopped" retry 30 agent_stopped
+expect "the app keeps running for the web UI" app_running
+fetch_status "${WORKDIR}/stopped-status.json"
+check "status page: settings need fixing" setup "$(jq -r '.summary.mode' "${WORKDIR}/stopped-status.json")"
+check "status page: startup failed" error "$(status_of "${WORKDIR}/stopped-status.json" startup)"
+docker rm -f "${NAME}-app" >/dev/null
+
+log "Fleet mode: enrolled agent stops"
+docker run -d --name "${NAME}-app" -v "${DATA}:/data" "${IMAGE}" >/dev/null
+sleep 10
+# What the agent saves once it has enrolled, created after it has started so
+# it doesn't try to read it.
+in_data 'touch /data/state/fleet.enc'
+stop_agent
+expect "the app stops with the agent" retry 30 app_stopped
+check "the app exits with the agent's exit code" 137 "$(docker inspect -f '{{.State.ExitCode}}' "${NAME}-app")"
+docker logs "${NAME}-app" >"${WORKDIR}/stopped.log" 2>&1 || true
+expect "logs why the app stopped" grep -q "Elastic Agent stopped (exit code 137)" "${WORKDIR}/stopped.log"
+docker rm -f "${NAME}-app" >/dev/null
+in_data 'rm -f /data/state/fleet.enc'
 
 log "Both modes configured"
 in_data 'cp /data/options.json /data/options.fleet.json'

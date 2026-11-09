@@ -167,10 +167,15 @@ func (c *Collector) Report(ctx context.Context, refresh bool) *Report {
 	r := &Report{GeneratedAt: now.UTC(), Checks: []Check{}, Summary: Summary{Tags: []string{}}}
 	r.StartupLog = readStartupLog(filepath.Join(c.paths.RunDir, "startup.log"))
 
-	if startupErr != nil {
-		r.Checks = append(r.Checks, Check{ID: "startup", Group: GroupConfig, Title: "Startup",
-			Status: StatusError, Summary: "The app hasn't finished starting, or couldn't record how it started.",
-			Detail: startupErr.Error()})
+	// The entrypoint writes agent-stopped when the agent couldn't get going and
+	// the container stays up so the settings can be fixed here.
+	_, stoppedErr := os.Stat(filepath.Join(c.paths.RunDir, "agent-stopped"))
+	if startupErr != nil || stoppedErr == nil {
+		ch := startupCheck(options, stoppedErr == nil)
+		if ch.Status != StatusUnknown {
+			r.Summary.Mode = "setup"
+		}
+		r.Checks = append(r.Checks, ch)
 		r.Overall = overall(r.Checks)
 		redactReport(r)
 		c.report, c.reportedAt = r, now
@@ -225,6 +230,26 @@ func (c *Collector) cachedAppInfo(ctx context.Context, now time.Time) *appInfo {
 		c.appInfo, c.appInfoAt = info, now
 	}
 	return c.appInfo
+}
+
+// startupCheck reports an app that isn't running Elastic Agent yet: still
+// starting, waiting for settings, or stopped because its settings didn't work.
+func startupCheck(options map[string]any, stopped bool) Check {
+	configured := false
+	for _, k := range []string{"elasticsearch_url", "fleet_url", "enrollment_token"} {
+		configured = configured || optionString(options, k) != ""
+	}
+	switch {
+	case !configured:
+		return Check{ID: "startup", Group: GroupConfig, Title: "Setup required", Status: StatusWarn,
+			Summary: "Configure the app below, then save and restart to begin collecting logs."}
+	case stopped:
+		return Check{ID: "startup", Group: GroupConfig, Title: "Startup failed", Status: StatusError,
+			Summary: "Elastic Agent couldn't start with these settings. Check the startup log, correct the settings below, then save and restart."}
+	default:
+		return Check{ID: "startup", Group: GroupConfig, Title: "Starting", Status: StatusUnknown,
+			Summary: "The app is preparing Elastic Agent. This page shows its status once it's running."}
+	}
 }
 
 func overall(checks []Check) Status {
