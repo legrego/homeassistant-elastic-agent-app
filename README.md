@@ -60,7 +60,10 @@ tests/smoke/smoke.sh
 CI lints the app and builds both architectures on every pull request. Pushes to
 `main` publish `ghcr.io/legrego/ha-app-elastic-agent`, tagged with the
 `version` in `elastic_agent/config.yaml`. Bump that version and add a
-`CHANGELOG.md` entry for every change to the image.
+`CHANGELOG.md` entry for every change to the image. Once a new version's images
+are published, CI creates a `v<version>` GitHub release with that version's
+changelog section as the release notes. Lint fails if the changelog has no
+section for the current version.
 
 Renovate opens pull requests when Elastic releases a new agent version.
 
