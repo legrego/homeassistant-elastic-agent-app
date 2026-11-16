@@ -1,7 +1,7 @@
 # The status page served through Home Assistant ingress. It's a static Go
 # binary with no dependencies beyond the standard library, cross-compiled for
 # the target architecture.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine AS status
+FROM --platform=$BUILDPLATFORM golang:1.27.4-alpine AS status
 ARG TARGETARCH
 WORKDIR /src
 COPY status/ ./
