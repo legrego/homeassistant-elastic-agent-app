@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} \
 # The slim image has the journald input but not journalctl, which the input runs
 # to read the journal. journalctl and jq come from the UBI 9 repositories that
 # match the base image.
-FROM docker.elastic.co/elastic-agent/elastic-agent-slim:9.5.6
+FROM docker.elastic.co/elastic-agent/elastic-agent-slim:9.5.7
 
 # Root is needed to read the host journal. See BEAT_SETUID_AS below.
 # hadolint ignore=DL3002
